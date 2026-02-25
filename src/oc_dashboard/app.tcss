@@ -124,3 +124,70 @@ DataTable:focus {
     color: #3d444d;
     border-top: heavy #0a3d1a;
 }
+
+
+/* ── Responsive: narrow (< 160 cols) ─────────────────── */
+
+Screen.narrow #top-row {
+    layout: vertical;
+}
+
+Screen.narrow #sessions-panel {
+    width: 1fr;
+    height: 5fr;
+}
+
+Screen.narrow #detail-panel {
+    width: 1fr;
+    height: 2fr;
+}
+
+Screen.narrow #bottom-row {
+    height: 4fr;
+}
+
+Screen.narrow .panel {
+    padding: 0;
+}
+
+Screen.narrow #topbar {
+    padding: 1 1;
+}
+
+/* ── Responsive: compact (< 100 cols) ────────────────── */
+
+Screen.compact #detail-panel {
+    display: none;
+}
+
+Screen.compact #top-row {
+    height: 6fr;
+}
+
+Screen.compact #sessions-panel {
+    height: 1fr;
+}
+
+Screen.compact #next-panel {
+    display: none;
+}
+
+Screen.compact #bottom-row {
+    layout: vertical;
+    height: 4fr;
+}
+
+Screen.compact #comms-panel {
+    width: 1fr;
+    height: 1fr;
+}
+
+Screen.compact #pr-panel {
+    width: 1fr;
+    height: 1fr;
+}
+
+Screen.compact #topbar {
+    height: 2;
+    padding: 0 1;
+}

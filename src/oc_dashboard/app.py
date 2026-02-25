@@ -255,6 +255,20 @@ class OCDashboardApp(App[None]):
 
         self.set_interval(5, self._watchdog)
 
+    def on_resize(self, event) -> None:
+        """Toggle responsive CSS classes based on terminal width."""
+        w = event.size.width
+        app = self.app if hasattr(self, 'app') else self
+        screen = app.screen
+        if w < 100:
+            screen.add_class("compact")
+            screen.add_class("narrow")
+        elif w < 160:
+            screen.remove_class("compact")
+            screen.add_class("narrow")
+        else:
+            screen.remove_class("compact")
+            screen.remove_class("narrow")
     # ── Live features ──────────────────────────────────────────────────
 
     def _open_latest_log(self) -> None:
