@@ -145,7 +145,7 @@ def _launch_session_in_tmux(session_id, project_path=None):
     if _in_tmux():
         try:
             subprocess.Popen(
-                ["tmux", "split-window", "-h", "-l", "25%", oc_cmd],
+                ["tmux", "split-window", "-h", "-l", "50%", oc_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
