@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oc-dashboard"
+version = "0.1.0"
+description = "Terminal dashboard for OpenCode sessions"
+requires-python = ">=3.9"
+dependencies = [
+  "textual>=0.40.0",
+  "rich",
+]
+
+[project.scripts]
+oc-dashboard = "oc_dashboard.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
