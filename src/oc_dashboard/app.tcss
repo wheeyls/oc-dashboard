@@ -1,0 +1,126 @@
+Screen {
+    background: #000000;
+    color: #a8b1ba;
+    scrollbar-background: #0a0a0a;
+    scrollbar-color: #0a3d1a;
+    scrollbar-color-hover: #00ff41;
+    scrollbar-color-active: #00ff41;
+}
+
+#topbar {
+    height: 3;
+    padding: 1 2;
+    background: #010409;
+    color: #00ff41;
+    text-style: bold;
+    border-bottom: heavy #0a3d1a;
+}
+
+#topbar.error-flash {
+    background: #1a0000;
+    color: #ff2040;
+    border-bottom: heavy #6b0000;
+}
+
+#main {
+    layout: vertical;
+    height: 1fr;
+}
+
+#top-row {
+    layout: horizontal;
+    height: 7fr;
+}
+
+#bottom-row {
+    layout: horizontal;
+    height: 3fr;
+}
+
+.panel {
+    border: heavy #0a3d1a;
+    margin: 0;
+    padding: 0 1;
+}
+
+.panel-title {
+    height: 1;
+    color: #00d4ff;
+    text-style: bold;
+}
+
+#sessions-panel {
+    width: 3fr;
+}
+
+#detail-panel {
+    width: 2fr;
+}
+
+#comms-panel {
+    width: 3fr;
+}
+
+#next-panel {
+    width: 2fr;
+}
+
+#pr-panel {
+    width: 3fr;
+}
+
+#detail-body {
+    height: 1fr;
+    color: #7a8490;
+    padding: 0 0 1 0;
+}
+
+#comms-body {
+    height: 1fr;
+    color: #00ff41;
+    padding: 0 0 1 0;
+}
+
+#next-body {
+    height: 1fr;
+    color: #c9a8ff;
+    padding: 0 0 1 0;
+}
+
+DataTable {
+    background: #000000;
+    color: #a8b1ba;
+    height: 1fr;
+}
+
+DataTable > .datatable--header {
+    background: #001a00;
+    color: #00ff41;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #003b00;
+    color: #39ff61;
+    text-style: bold;
+}
+
+DataTable > .datatable--even-row {
+    background: #010409;
+}
+
+DataTable > .datatable--odd-row {
+    background: #000000;
+}
+
+DataTable:focus {
+    border: none;
+}
+
+#footerbar {
+    height: 1;
+    padding: 0 1;
+    background: #010409;
+    color: #3d444d;
+    border-top: heavy #0a3d1a;
+}
