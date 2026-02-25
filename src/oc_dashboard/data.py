@@ -232,14 +232,14 @@ def fetch_sessions(limit):
             d = str(row["directory"] or "")
             groups.setdefault(d, []).append(row)
 
-        sessions = []  # type: list
+        # Build each repo group, then sort groups and sessions by effective recency
+        repo_blocks = []  # type: list  # [(effective_time, header, session_list)]
         for directory, dir_rows in groups.items():
             repo_name = os.path.basename(directory) or directory
 
             # Detect forks: match 'Title (fork #N)' -> group under original 'Title'
-            originals = []  # type: list  # (session, [fork_sessions])
+            originals = []  # type: list
             fork_bucket = {}  # type: dict  # base_title -> [fork_sessions]
-            original_order = []  # type: list  # base_titles in order
 
             for row in dir_rows:
                 sess = _row_to_session(row, depth=1)
@@ -249,42 +249,59 @@ def fetch_sessions(limit):
                     fork_bucket.setdefault(base, []).append(sess)
                 else:
                     originals.append(sess)
-                    original_order.append(sess.title)
 
-            # Group header row
-            if originals:
-                newest = max(s.updated for s in originals)
-            else:
-                # Only forks, no originals — use fork timestamps
-                all_forks = [f for fs in fork_bucket.values() for f in fs]
-                newest = max(f.updated for f in all_forks) if all_forks else datetime.now()
+            # Build session families: (effective_time, original, [forks])
+            families = []  # type: list
+            for sess in originals:
+                forks = fork_bucket.pop(sess.title, [])
+                # Effective time = max of own time and all fork times
+                effective = sess.updated
+                for f in forks:
+                    if f.updated > effective:
+                        effective = f.updated
+                families.append((effective, sess, forks))
+
+            # Orphan forks (no matching original) become their own family
+            for base_title, forks in fork_bucket.items():
+                for fork in forks:
+                    families.append((fork.updated, fork, []))
+
+            # Sort families by effective time, newest first
+            families.sort(key=lambda fam: fam[0], reverse=True)
+
+            # Repo-level effective time = newest family
+            repo_effective = families[0][0] if families else datetime.now()
 
             header = SessionSummary(
                 id="group:" + directory,
                 title=repo_name,
-                updated=newest,
+                updated=repo_effective,
                 pending=0, in_progress=0, completed=0, cancelled=0,
                 parent_id=None,
                 depth=0,
                 directory=directory,
                 is_group_header=True,
             )
-            sessions.append(header)
 
-            # Add originals, with any forks nested under them
-            for sess in originals:
-                sessions.append(sess)
-                forks = fork_bucket.pop(sess.title, [])
+            # Flatten families into ordered session list
+            family_sessions = []  # type: list
+            for effective, sess, forks in families:
+                family_sessions.append(sess)
                 for fork in sorted(forks, key=lambda f: f.title):
                     fork.depth = 2
                     fork.parent_id = sess.id
-                    sessions.append(fork)
+                    family_sessions.append(fork)
 
-            # Orphan forks (no matching original found) — show at depth=1
-            for base_title, forks in fork_bucket.items():
-                for fork in sorted(forks, key=lambda f: f.title):
-                    fork.depth = 1
-                    sessions.append(fork)
+            repo_blocks.append((repo_effective, header, family_sessions))
+
+        # Sort repo groups by effective time, newest first
+        repo_blocks.sort(key=lambda b: b[0], reverse=True)
+
+        # Assemble final flat list
+        sessions = []  # type: list
+        for _, header, family_sessions in repo_blocks:
+            sessions.append(header)
+            sessions.extend(family_sessions)
 
     except Exception:
         return []
