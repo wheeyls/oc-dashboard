@@ -6,6 +6,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional
 
+from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -117,6 +118,7 @@ EVENT_DISPLAY = {
     "file.edited": (_COG, "file edited"),
     "tui.toast.show": (_INFO, "notification"),
     "watchdog.kill": (_SKULL, "KILLED"),
+    "ci.failed": (_TIMES, "CI FAILED"),
     }
 
 ACTIVE_WORKER_WINDOW = timedelta(minutes=3)
@@ -198,6 +200,7 @@ class OCDashboardApp(App[None]):
         self._error_flash_until = None  # type: Optional[datetime]
         self._total_cost = 0.0
         self._watchdog_warned = set()  # type: set
+        self._prev_ci_fail_count = 0
 
     def compose(self) -> ComposeResult:
         yield Static("", id="topbar")
@@ -493,13 +496,25 @@ class OCDashboardApp(App[None]):
 
         if self._selected_index >= len(self._sessions):
             self._selected_index = max(0, len(self._sessions) - 1)
+
+        # Flash topbar if CI failures increased
+        ci_fails = sum(1 for p in snapshot.prs if p.ci_status == CI_FAIL)
+        if ci_fails > self._prev_ci_fail_count and ci_fails > 0:
+            self._error_flash_until = datetime.now() + timedelta(seconds=10)
+            self._log_events.append(LogEvent(
+                timestamp=datetime.now().strftime("%H:%M:%S"),
+                event_type="ci.failed",
+                fields={},
+                raw="%d PR(s) failing CI" % ci_fails,
+            ))
+        self._prev_ci_fail_count = ci_fails
+
         self._render_topbar()
         self._render_sessions()
         self._render_detail()
         self._render_prs()
         self._render_comms()
         self._render_next_ops()
-
     # ── Topbar ──────────────────────────────────────────
 
     def _render_topbar(self) -> None:
@@ -539,6 +554,12 @@ class OCDashboardApp(App[None]):
                 branch_display = branch_display[:25] + "..."
             parts.append("%s %s %s" % (_SEP, _BRANCH_ICON, branch_display))
 
+        # CI failure badge — persistent red alert in topbar
+        ci_fails = sum(
+            1 for p in (self._snapshot.prs if self._snapshot else []) if p.ci_status == CI_FAIL
+        )
+        if ci_fails > 0:
+            parts.append("%s [bold red]%s %s CI FAIL[/]" % (_SEP, _TIMES, ci_fails))
         topbar = self.query_one("#topbar", Static)
 
         # Error flash: red background for 5s after session.error
@@ -763,10 +784,47 @@ class OCDashboardApp(App[None]):
         table.clear()
         if not self._snapshot:
             return
-        for pr in self._snapshot.prs[:10]:
-            title = pr.title if len(pr.title) <= 30 else pr.title[:27] + "..."
-            table.add_row("#%s" % pr.number, pr.ci_status, title, pr.review_status)
 
+        # Sort: failures first, then pending, then passing
+        ci_order = {CI_FAIL: 0, CI_PENDING: 1, CI_PASS: 2}
+        prs = sorted(
+            self._snapshot.prs[:10],
+            key=lambda p: ci_order.get(p.ci_status, 1),
+        )
+
+        fail_count = sum(1 for p in prs if p.ci_status == CI_FAIL)
+
+        # Update panel title to show failure count
+        pr_title_widget = self.query_one("#pr-panel .panel-title", Static)
+        if fail_count > 0:
+            pr_title_widget.update(
+                " %s PULL REQUESTS  [bold red]%s %s FAILING[/]"
+                % (_FORK, _TIMES, fail_count)
+            )
+        else:
+            pr_title_widget.update(" %s PULL REQUESTS" % _FORK)
+
+        for pr in prs:
+            title = pr.title if len(pr.title) <= 30 else pr.title[:27] + "..."
+
+            if pr.ci_status == CI_FAIL:
+                # RED everything for failures — this needs to be unmissable
+                pr_col = Text("#%s" % pr.number, style="bold red")
+                ci_col = Text("%s FAIL" % _TIMES, style="bold red")
+                title_col = Text(title, style="bold red")
+                review_col = Text(pr.review_status, style="red")
+            elif pr.ci_status == CI_PASS:
+                pr_col = Text("#%s" % pr.number)
+                ci_col = Text("%s" % _CHECK, style="green")
+                title_col = Text(title)
+                review_col = Text(pr.review_status)
+            else:
+                pr_col = Text("#%s" % pr.number)
+                ci_col = Text("%s" % _SPIN, style="yellow")
+                title_col = Text(title)
+                review_col = Text(pr.review_status)
+
+            table.add_row(pr_col, ci_col, title_col, review_col)
     # ── Next Ops panel ──────────────────────────────────
 
     def _render_next_ops(self) -> None:
@@ -822,6 +880,8 @@ class OCDashboardApp(App[None]):
             elif ev.event_type == "watchdog.kill":
                 detail = ev.fields.get("detail", "process killed")
                 text = " %s %s  [bold red]%s[/]" % (ts, icon, detail)
+            elif ev.event_type == "ci.failed":
+                text = " %s %s  [bold red]%s %s[/]" % (ts, icon, _EXCL, ev.raw)
             else:
                 text = " %s %s  %s" % (ts, icon, label)
 
