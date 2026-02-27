@@ -89,22 +89,9 @@ Screen {
 }
 
 #sessions-panel {
-    width: 3fr;
+    width: 1fr;
 }
 
-#comms-panel {
-    width: 2fr;
-}
-
-#comms-body {
-    height: 1fr;
-    color: #00ff41;
-    padding: 0 0 1 0;
-}
-
-#pr-panel {
-    width: 3fr;
-}
 
 DataTable {
     background: #000000;
@@ -219,16 +206,7 @@ Screen.compact #bottom-row {
     height: 4fr;
 }
 
-Screen.compact #comms-panel {
-    display: none;
-}
-
 Screen.compact #sessions-panel {
-    width: 1fr;
-    height: 1fr;
-}
-
-Screen.compact #pr-panel {
     width: 1fr;
     height: 1fr;
 }

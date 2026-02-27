@@ -1,12 +1,10 @@
 import os
 import signal
 import subprocess
-import webbrowser
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -20,7 +18,7 @@ from .data import TodoItem
 from .data import build_snapshot
 from .data import relative_time
 from .data import session_status
-from .data import CI_PASS, CI_FAIL, CI_PENDING
+from .data import CI_FAIL
 from .data import LogEvent, get_wal_mtime, find_latest_log, parse_log_line
 from .data import fetch_running_processes
 from .kanban import (
@@ -179,7 +177,6 @@ class OCDashboardApp(App[None]):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
-        Binding("o", "open_pr", "Open PR"),
         Binding("h", "col_left", "Left col", show=False),
         Binding("l", "col_right", "Right col", show=False),
         Binding("left", "col_left", "Left col", show=False),
@@ -245,18 +242,12 @@ class OCDashboardApp(App[None]):
                                 "", id="body-%s" % stage, classes="column-body"
                             )
                 with Container(id="detail-panel"):
-                    yield Static(" %s INTEL" % _EYE, classes="panel-title")
+                    yield Static(" %s PROJECT" % _EYE, classes="panel-title")
                     yield Static("", id="detail-body")
             with Container(id="bottom-row"):
                 with Container(id="sessions-panel", classes="panel"):
                     yield Static(" %s SESSIONS" % _LIST, classes="panel-title")
                     yield DataTable(id="sessions-table")
-                with Container(id="comms-panel", classes="panel"):
-                    yield Static(" %s COMMS" % _SIGNAL, classes="panel-title")
-                    yield Static("", id="comms-body")
-                with Container(id="pr-panel", classes="panel"):
-                    yield Static(" %s PULL REQUESTS" % _FORK, classes="panel-title")
-                    yield DataTable(id="pr-table")
         with Container(id="kanban-input-bar"):
             yield Static("", id="kanban-input-label")
             yield Input(id="kanban-input", placeholder="")
@@ -270,10 +261,6 @@ class OCDashboardApp(App[None]):
         sessions_table.cursor_type = "row"
         sessions_table.can_focus = False
 
-        pr_table = self.query_one("#pr-table", DataTable)
-        _ = pr_table.add_columns("PR", "CI", "Title", "Review")
-        pr_table.cursor_type = "row"
-        pr_table.can_focus = False
 
         # Initialize WAL mtime for change detection
         self._wal_mtime = get_wal_mtime()
@@ -384,7 +371,7 @@ class OCDashboardApp(App[None]):
             self._log_path = None
 
         if new_events:
-            self._render_comms()
+            self._render_topbar()
             self._render_topbar()
 
     def _check_wal(self) -> None:
@@ -443,7 +430,7 @@ class OCDashboardApp(App[None]):
 
         if killed_any:
             self._error_flash_until = datetime.now() + timedelta(seconds=10)
-            self._render_comms()
+            self._render_topbar()
             self._render_topbar()
 
     def _tick(self) -> None:
@@ -457,8 +444,6 @@ class OCDashboardApp(App[None]):
         self._refresh_kanban()
         _ = self.refresh_dashboard()
 
-    def action_open_pr(self) -> None:
-        self._open_selected_pr()
 
     def action_col_left(self) -> None:
         if self._mode != MODE_NORMAL:
@@ -658,9 +643,7 @@ class OCDashboardApp(App[None]):
 
     def on_data_table_row_selected(self, event_obj: DataTable.RowSelected) -> None:
         table = event_obj.data_table
-        if table.id == "pr-table":
-            self._open_selected_pr()
-        elif table.id == "sessions-table":
+        if table.id == "sessions-table":
             self._open_selected_session()
 
     # ── Data ───────────────────────────────────────────────────────────
@@ -718,8 +701,6 @@ class OCDashboardApp(App[None]):
         self._render_topbar()
         self._render_sessions()
         self._render_detail()
-        self._render_prs()
-        self._render_comms()
 
     # ── Kanban data ────────────────────────────────────────────────────
 
@@ -857,8 +838,8 @@ class OCDashboardApp(App[None]):
 
     def _render_footerbar(self) -> None:
         self.query_one("#footerbar", Static).update(
-            " q:quit %s r:refresh %s h/l:columns %s j/k:projects %s m:move %s a:add %s s:link-sess %s p:link-pr %s d:del %s o:open-pr"
-            % (_PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE)
+            " q:quit %s r:refresh %s h/l:columns %s j/k:select %s m:move %s a:add %s enter:open-sess"
+            % (_PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE)
         )
 
     # ── Rendering: Detail (kanban project) ─────────────────────────────
@@ -1021,109 +1002,6 @@ class OCDashboardApp(App[None]):
             table.move_cursor(row=safe_idx)
         self._refreshing = False
 
-    # ── Rendering: PR table ────────────────────────────────────────────
-
-    def _render_prs(self) -> None:
-        table = self.query_one("#pr-table", DataTable)
-        table.clear()
-        if not self._snapshot:
-            return
-
-        ci_order = {CI_FAIL: 0, CI_PENDING: 1, CI_PASS: 2}
-        prs = sorted(
-            self._snapshot.prs[:10],
-            key=lambda p: ci_order.get(p.ci_status, 1),
-        )
-
-        fail_count = sum(1 for p in prs if p.ci_status == CI_FAIL)
-
-        pr_title_widget = self.query_one("#pr-panel .panel-title", Static)
-        if fail_count > 0:
-            pr_title_widget.update(
-                " %s PULL REQUESTS  [bold red]%s %s FAILING[/]"
-                % (_FORK, _TIMES, fail_count)
-            )
-        else:
-            pr_title_widget.update(" %s PULL REQUESTS" % _FORK)
-
-        for pr in prs:
-            title = pr.title if len(pr.title) <= 30 else pr.title[:27] + "..."
-
-            if pr.ci_status == CI_FAIL:
-                pr_col = Text("#%s" % pr.number, style="bold red")
-                ci_col = Text("%s FAIL" % _TIMES, style="bold red")
-                title_col = Text(title, style="bold red")
-                review_col = Text(pr.review_status, style="red")
-            elif pr.ci_status == CI_PASS:
-                pr_col = Text("#%s" % pr.number)
-                ci_col = Text("%s" % _CHECK, style="green")
-                title_col = Text(title)
-                review_col = Text(pr.review_status)
-            else:
-                pr_col = Text("#%s" % pr.number)
-                ci_col = Text("%s" % _SPIN, style="yellow")
-                title_col = Text(title)
-                review_col = Text(pr.review_status)
-
-            table.add_row(pr_col, ci_col, title_col, review_col)
-
-    # ── Rendering: Comms (live event feed) ─────────────────────────────
-
-    def _render_comms(self) -> None:
-        body = self.query_one("#comms-body", Static)
-        if not self._log_events:
-            body.update(" %s Listening..." % _SIGNAL)
-            return
-
-        lines = []  # type: list
-        events = list(self._log_events)
-        events.reverse()
-        for ev in events[:8]:
-            display = EVENT_DISPLAY.get(ev.event_type)
-            if display is None:
-                icon = _INFO
-                label = ev.event_type
-            else:
-                icon, label = display
-
-            ts = "[dim]%s[/]" % ev.time_str
-
-            if ev.event_type == "vcs.branch":
-                from_b = ev.fields.get("from", "?")
-                to_b = ev.fields.get("to", "?")
-                if len(from_b) > 20:
-                    from_b = from_b[:17] + "..."
-                if len(to_b) > 20:
-                    to_b = to_b[:17] + "..."
-                text = " %s %s  %s [bold]%s[/]" % (ts, icon, from_b, to_b)
-            elif ev.event_type == "command.executed":
-                command = ev.fields.get("command", "")
-                command = command.strip() if command else ""
-                if command.startswith("git commit"):
-                    text = " %s %s  [bold cyan]git commit[/]" % (ts, icon)
-                elif command.startswith("git push"):
-                    text = " %s %s  [bold cyan]git push[/]" % (ts, icon)
-                elif command.startswith("gh pr"):
-                    text = " %s %s  [bold cyan]gh pr[/]" % (ts, icon)
-                elif command:
-                    if len(command) > 42:
-                        command = command[:39] + "..."
-                    text = " %s %s  [cyan]%s[/]" % (ts, icon, command)
-                else:
-                    text = " %s %s  %s" % (ts, icon, label)
-            elif ev.event_type == "session.error":
-                text = " %s %s  [bold red]%s %s[/]" % (ts, icon, _EXCL, label)
-            elif ev.event_type == "watchdog.kill":
-                detail = ev.fields.get("detail", "process killed")
-                text = " %s %s  [bold red]%s[/]" % (ts, icon, detail)
-            elif ev.event_type == "ci.failed":
-                detail = ev.fields.get("detail", "CI failing")
-                text = " %s %s  [bold red]%s %s[/]" % (ts, icon, _EXCL, detail)
-            else:
-                text = " %s %s  %s" % (ts, icon, label)
-
-            lines.append(text)
-        body.update("\n".join(lines))
 
     # ── Helpers ────────────────────────────────────────────────────────
 
@@ -1140,19 +1018,6 @@ class OCDashboardApp(App[None]):
         )
         _launch_session_in_tmux(session.id, project_path)
 
-    def _open_selected_pr(self) -> None:
-        if not self._snapshot:
-            return
-        pr_table = self.query_one("#pr-table", DataTable)
-        row_idx = pr_table.cursor_row
-        if row_idx is None or row_idx < 0:
-            return
-        prs = self._snapshot.prs[:10]
-        if row_idx >= len(prs):
-            return
-        pr = prs[row_idx]
-        if pr.url:
-            webbrowser.open(pr.url)
 
     def _init_branch(self) -> None:
         """Get current git branch from the project path."""
