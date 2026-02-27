@@ -1,25 +1,20 @@
 Screen {
-    layout: vertical;
-    padding: 0;
-    margin: 0;
     background: #000000;
     color: #a8b1ba;
-    overflow: hidden;
 }
 
 #topbar {
-    height: 2;
+    dock: top;
+    height: 1;
     padding: 0 2;
     background: #010409;
     color: #00ff41;
     text-style: bold;
-    border-bottom: heavy #0a3d1a;
 }
 
 #topbar.error-flash {
     background: #1a0000;
     color: #ff2040;
-    border-bottom: heavy #6b0000;
 }
 
 #kanban-row {
@@ -85,10 +80,10 @@ KanbanList:focus > .option-list--option-highlighted {
 }
 
 #kanban-input-bar {
+    dock: bottom;
     height: 3;
     padding: 0 1;
     background: #001a00;
-    border-top: heavy #0a3d1a;
     display: none;
 }
 
@@ -112,11 +107,11 @@ KanbanList:focus > .option-list--option-highlighted {
 }
 
 #footerbar {
+    dock: bottom;
     height: 1;
     padding: 0 1;
     background: #010409;
     color: #3d444d;
-    border-top: heavy #0a3d1a;
 }
 
 /* ── Sessions screen ─────────────────────────────────── */
@@ -127,12 +122,12 @@ SessionsScreen {
 }
 
 #sessions-topbar {
-    height: 2;
+    dock: top;
+    height: 1;
     padding: 0 2;
     background: #010409;
     color: #00ff41;
     text-style: bold;
-    border-bottom: heavy #0a3d1a;
 }
 
 #sessions-body {
@@ -141,11 +136,11 @@ SessionsScreen {
 }
 
 #sessions-footer {
+    dock: bottom;
     height: 1;
     padding: 0 1;
     background: #010409;
     color: #3d444d;
-    border-top: heavy #0a3d1a;
 }
 
 DataTable {
