@@ -136,6 +136,12 @@ class KanbanList(OptionList):
     def on_focus(self) -> None:
         if self.highlighted is None and self.option_count > 0:
             self.action_first()
+        # Update detail panel after focus settles
+        self.call_later(self._update_detail)
+
+    def _update_detail(self) -> None:
+        if hasattr(self.app, '_render_detail'):
+            self.app._render_detail()
 
 
 # ══════════════════════════════════════════════════════════
@@ -661,13 +667,6 @@ class OCDashboardApp(App[None]):
         # type: (OptionList.OptionHighlighted) -> None
         self._render_detail()
 
-    def on_option_list_option_selected(self, event):
-        # type: (OptionList.OptionSelected) -> None
-        project = self._selected_project()
-        if project and project.session_ids:
-            session_id = project.session_ids[0]
-            project_path = self._snapshot.project_path if self._snapshot else None
-            _launch_session_in_tmux(session_id, project_path)
 
     # ── Data ───────────────────────────────────────────────────────────
 
