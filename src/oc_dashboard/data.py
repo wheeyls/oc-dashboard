@@ -48,6 +48,7 @@ class SessionSummary:
     def total(self) -> int:
         return self.pending + self.in_progress + self.completed + self.cancelled
 
+
 @dataclass
 class TodoItem:
     status: str
@@ -115,10 +116,17 @@ class SessionCost:
 
 
 @dataclass
+class DailySpend:
+    day: str
+    total_cost: float
+
+
+@dataclass
 class LogEvent:
     time_str: str
     event_type: str
     fields: dict  # type: dict
+
 
 @dataclass
 class DashboardSnapshot:
@@ -130,6 +138,7 @@ class DashboardSnapshot:
     prs: List[PullRequestSummary]
     recommendations: List[Recommendation]
     session_costs: List[SessionCost]
+    daily_spend: List[DailySpend]
     project_path: Optional[str]
     errors: List[str]
 
@@ -198,7 +207,7 @@ def fetch_sessions(limit):
         "LIMIT ?;"
     )
 
-    _FORK_RE = re.compile(r'^(.+?)\s*\(fork #(\d+)\)$')
+    _FORK_RE = re.compile(r"^(.+?)\s*\(fork #(\d+)\)$")
 
     def _row_to_session(row, depth=0):
         # type: (Any, int) -> SessionSummary
@@ -276,7 +285,10 @@ def fetch_sessions(limit):
                 id="group:" + directory,
                 title=repo_name,
                 updated=repo_effective,
-                pending=0, in_progress=0, completed=0, cancelled=0,
+                pending=0,
+                in_progress=0,
+                completed=0,
+                cancelled=0,
                 parent_id=None,
                 depth=0,
                 directory=directory,
@@ -306,6 +318,7 @@ def fetch_sessions(limit):
     except Exception:
         return []
     return sessions
+
 
 def fetch_todos_for_session(session_id):
     # type: (str) -> List[TodoItem]
@@ -437,7 +450,8 @@ def fetch_running_processes():
                 mem_mb=rss_kb // 1024,
                 terminal=terminal,
                 session_id=session_id,
-        ))
+            )
+        )
     return entries
 
 
@@ -527,6 +541,56 @@ def fetch_session_costs(limit=20):
     except Exception:
         return []
     return costs
+
+
+def fetch_daily_spend(days=14):
+    # type: (int) -> List[DailySpend]
+    if not os.path.exists(DB_PATH):
+        return []
+    if days <= 0:
+        return []
+
+    start_dt = datetime.now() - timedelta(days=days - 1)
+    start_day = start_dt.strftime("%Y-%m-%d")
+
+    query = (
+        "SELECT "
+        "  DATE(m.time_created / 1000, 'unixepoch', 'localtime') as day, "
+        "  ROUND(SUM(json_extract(m.data, '$.cost')), 6) as total_cost "
+        "FROM message m "
+        "WHERE json_extract(m.data, '$.role') = 'assistant' "
+        "  AND json_extract(m.data, '$.cost') > 0 "
+        "  AND DATE(m.time_created / 1000, 'unixepoch', 'localtime') >= ? "
+        "GROUP BY day "
+        "ORDER BY day ASC;"
+    )
+
+    spend_by_day = {}  # type: dict
+    try:
+        connection = _connect()
+        try:
+            rows = connection.execute(query, (start_day,)).fetchall()
+        finally:
+            connection.close()
+        for row in rows:
+            day = str(row["day"] or "")
+            if not day:
+                continue
+            spend_by_day[day] = float(row["total_cost"] or 0)
+    except Exception:
+        return []
+
+    spends = []  # type: List[DailySpend]
+    for i in range(days):
+        day_dt = start_dt + timedelta(days=i)
+        day_key = day_dt.strftime("%Y-%m-%d")
+        spends.append(
+            DailySpend(
+                day=day_key,
+                total_cost=spend_by_day.get(day_key, 0.0),
+            )
+        )
+    return spends
 
 
 def _compute_ci_status(checks):
@@ -771,6 +835,7 @@ def build_snapshot(limit=30):
     worktrees = fetch_worktrees(project_path=project_path)
     prs = fetch_prs(project_path=project_path)
     session_costs = fetch_session_costs(limit=20)
+    daily_spend = fetch_daily_spend(days=14)
 
     snapshot = DashboardSnapshot(
         sessions=sessions,
@@ -781,6 +846,7 @@ def build_snapshot(limit=30):
         prs=prs,
         recommendations=[],
         session_costs=session_costs,
+        daily_spend=daily_spend,
         project_path=project_path,
         errors=errors,
     )
@@ -812,7 +878,7 @@ def find_latest_log():
 # Regex for log lines:
 # INFO  2026-02-24T20:34:51 +499ms service=bus type=message.updated publishing
 _LOG_RE = re.compile(
-    r'^(\w+)\s+(\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2}))\s+\+(\d+)m?s\s+(.*)'
+    r"^(\w+)\s+(\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2}))\s+\+(\d+)m?s\s+(.*)"
 )
 
 # Events to skip (too noisy)
@@ -820,6 +886,13 @@ SKIP_EVENTS = {
     "file.watcher.updated",
     "message.part.delta",
     "message.part.updated",
+}
+
+SIGNIFICANT_BUS_EVENTS = {
+    "session.error",
+    "session.diff",
+    "session.compacted",
+    "command.executed",
 }
 
 
@@ -859,6 +932,27 @@ def parse_log_line(line):
         event_type = fields.get("type", "")
         if not event_type or event_type in SKIP_EVENTS:
             return None
+        if event_type not in SIGNIFICANT_BUS_EVENTS:
+            return None
+        if event_type == "command.executed":
+            command = ""
+            command_match = re.search(r'\bcommand="([^"]+)"', rest)
+            if command_match:
+                command = command_match.group(1)
+            else:
+                command_match = re.search(r"\bcommand=([^\s]+)", rest)
+                if command_match:
+                    command = command_match.group(1)
+            if not command:
+                cmd_match = re.search(r'\bcmd="([^"]+)"', rest)
+                if cmd_match:
+                    command = cmd_match.group(1)
+                else:
+                    cmd_match = re.search(r"\bcmd=([^\s]+)", rest)
+                    if cmd_match:
+                        command = cmd_match.group(1)
+            if command:
+                fields["command"] = command
         return LogEvent(
             time_str=time_str,
             event_type=event_type,

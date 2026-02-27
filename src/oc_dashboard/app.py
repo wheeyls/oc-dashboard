@@ -4,7 +4,7 @@ import subprocess
 import webbrowser
 from collections import deque
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 from rich.text import Text
 from textual import work
@@ -104,26 +104,19 @@ PRIORITY_ICONS = {
 
 # ── Event display mapping for Comms panel ───────────────
 EVENT_DISPLAY = {
-    "session.status": (_CIRCLE, "session status"),
-    "session.updated": (_COG, "session updated"),
-    "session.idle": (_KEYBOARD, "agent idle"),
     "session.error": (_EXCL, "ERROR"),
     "session.diff": (_COG, "files changed"),
     "session.compacted": (_COG, "session compacted"),
-    "message.updated": (_CHECK, "message complete"),
-    "todo.updated": (_SQ_O, "todo updated"),
     "vcs.branch": (_BRANCH_ICON, ""),  # special: shows from->to
-    "command.executed": (_TERM, "command executed"),
-    "lsp.client.diagnostics": (_WARN, "LSP diagnostics"),
-    "file.edited": (_COG, "file edited"),
-    "tui.toast.show": (_INFO, "notification"),
+    "command.executed": (_TERM, "command"),
     "watchdog.kill": (_SKULL, "KILLED"),
     "ci.failed": (_TIMES, "CI FAILED"),
-    }
+}
 
 ACTIVE_WORKER_WINDOW = timedelta(minutes=3)
-COMMS_MAX_EVENTS = 40
+COMMS_MAX_EVENTS = 16
 MEM_KILL_THRESHOLD_MB = 8192  # 8GB — processes above this get killed
+
 
 def _in_tmux():
     # type: () -> bool
@@ -153,9 +146,8 @@ def _launch_session_in_tmux(session_id, project_path=None):
             pass
     else:
         # Fallback: open in a new Terminal.app window (macOS)
-        apple_script = (
-            'tell application "Terminal" to do script "%s"'
-            % cmd.replace('"', '\\"')
+        apple_script = 'tell application "Terminal" to do script "%s"' % oc_cmd.replace(
+            '"', '\\"'
         )
         try:
             subprocess.Popen(
@@ -186,6 +178,7 @@ class OCDashboardApp(App[None]):
         self._workers_by_session = {}  # type: dict
         self._running_cpu = {}  # type: dict
         self._cost_by_session = {}  # type: dict
+        self._daily_spend = []  # type: list
         self._mem_by_session = {}  # type: dict
         self._unattributed_cpu = 0.0
         self._selected_index = 0
@@ -194,7 +187,7 @@ class OCDashboardApp(App[None]):
         # Live features state
         self._wal_mtime = None  # type: Optional[float]
         self._log_path = None  # type: Optional[str]
-        self._log_handle = None  # type: Optional[object]
+        self._log_handle = None  # type: Optional[Any]
         self._log_events = deque(maxlen=COMMS_MAX_EVENTS)  # type: deque
         self._current_branch = ""
         self._error_flash_until = None  # type: Optional[datetime]
@@ -216,6 +209,9 @@ class OCDashboardApp(App[None]):
                 with Container(id="comms-panel", classes="panel"):
                     yield Static(" %s COMMS" % _SIGNAL, classes="panel-title")
                     yield Static("", id="comms-body")
+                with Container(id="spend-panel", classes="panel"):
+                    yield Static(" %s DAILY SPEND" % _DOLLAR, classes="panel-title")
+                    yield Static("", id="spend-body")
                 with Container(id="next-panel", classes="panel"):
                     yield Static(" %s NEXT OPS" % _ROCKET, classes="panel-title")
                     yield Static("", id="next-body")
@@ -258,7 +254,7 @@ class OCDashboardApp(App[None]):
     def on_resize(self, event) -> None:
         """Toggle responsive CSS classes based on terminal width."""
         w = event.size.width
-        app = self.app if hasattr(self, 'app') else self
+        app = self.app if hasattr(self, "app") else self
         screen = app.screen
         if w < 100:
             screen.add_class("compact")
@@ -269,6 +265,7 @@ class OCDashboardApp(App[None]):
         else:
             screen.remove_class("compact")
             screen.remove_class("narrow")
+
     # ── Live features ──────────────────────────────────────────────────
 
     def _open_latest_log(self) -> None:
@@ -411,6 +408,7 @@ class OCDashboardApp(App[None]):
             self._error_flash_until = datetime.now() + timedelta(seconds=10)
             self._render_comms()
             self._render_topbar()
+
     def _tick(self) -> None:
         self._tick_count += 1
         self._render_topbar()
@@ -441,8 +439,11 @@ class OCDashboardApp(App[None]):
         session = self._sessions[self._selected_index]
         if session.is_group_header:
             return
-        project_path = session.directory or (self._snapshot.project_path if self._snapshot else None)
+        project_path = session.directory or (
+            self._snapshot.project_path if self._snapshot else None
+        )
         _launch_session_in_tmux(session.id, project_path)
+
     def _open_selected_pr(self) -> None:
         if not self._snapshot:
             return
@@ -488,6 +489,7 @@ class OCDashboardApp(App[None]):
         self._workers_by_session = snapshot.workers_by_session
         self._running_cpu = {}
         self._cost_by_session = {}
+        self._daily_spend = []
         self._unattributed_cpu = 0.0
         for process in snapshot.running_processes:
             if process.session_id:
@@ -507,6 +509,7 @@ class OCDashboardApp(App[None]):
         for cost in snapshot.session_costs:
             self._cost_by_session[cost.session_id] = cost.total_cost
             self._total_cost += cost.total_cost
+        self._daily_spend = snapshot.daily_spend
 
         if self._selected_index >= len(self._sessions):
             self._selected_index = max(0, len(self._sessions) - 1)
@@ -515,12 +518,13 @@ class OCDashboardApp(App[None]):
         ci_fails = sum(1 for p in snapshot.prs if p.ci_status == CI_FAIL)
         if ci_fails > self._prev_ci_fail_count and ci_fails > 0:
             self._error_flash_until = datetime.now() + timedelta(seconds=10)
-            self._log_events.append(LogEvent(
-                timestamp=datetime.now().strftime("%H:%M:%S"),
-                event_type="ci.failed",
-                fields={},
-                raw="%d PR(s) failing CI" % ci_fails,
-            ))
+            self._log_events.append(
+                LogEvent(
+                    time_str=datetime.now().strftime("%H:%M:%S"),
+                    event_type="ci.failed",
+                    fields={"detail": "%d PR(s) failing CI" % ci_fails},
+                )
+            )
         self._prev_ci_fail_count = ci_fails
 
         self._render_topbar()
@@ -528,7 +532,9 @@ class OCDashboardApp(App[None]):
         self._render_detail()
         self._render_prs()
         self._render_comms()
+        self._render_spend()
         self._render_next_ops()
+
     # ── Topbar ──────────────────────────────────────────
 
     def _render_topbar(self) -> None:
@@ -570,7 +576,9 @@ class OCDashboardApp(App[None]):
 
         # CI failure badge — persistent red alert in topbar
         ci_fails = sum(
-            1 for p in (self._snapshot.prs if self._snapshot else []) if p.ci_status == CI_FAIL
+            1
+            for p in (self._snapshot.prs if self._snapshot else [])
+            if p.ci_status == CI_FAIL
         )
         if ci_fails > 0:
             parts.append("%s [bold red]%s %s CI FAIL[/]" % (_SEP, _TIMES, ci_fails))
@@ -587,7 +595,8 @@ class OCDashboardApp(App[None]):
 
     def _render_footerbar(self) -> None:
         self.query_one("#footerbar", Static).update(
-            " q:quit %s r:refresh %s o:pr %s enter:session %s j/k:nav" % (_PIPE, _PIPE, _PIPE, _PIPE)
+            " q:quit %s r:refresh %s o:pr %s enter:session %s j/k:nav"
+            % (_PIPE, _PIPE, _PIPE, _PIPE)
         )
 
     # ── Sessions table ──────────────────────────────────
@@ -640,7 +649,11 @@ class OCDashboardApp(App[None]):
                 table.add_row(
                     _FOLDER,
                     session.title,
-                    "", "", "", "", "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
                     key=session.id,
                 )
                 continue
@@ -704,12 +717,19 @@ class OCDashboardApp(App[None]):
             duration = "%sh" % (secs // 3600)
         if running:
             return "  [green]%s %s %s:[/] %s [dim](%s, %s msgs)[/]" % (
-                _PLAY, agent_icon, worker.agent_type,
-                worker.description[:40], duration, worker.message_count,
+                _PLAY,
+                agent_icon,
+                worker.agent_type,
+                worker.description[:40],
+                duration,
+                worker.message_count,
             )
         return "  [dim]- %s %s: %s (%s, %s msgs)[/]" % (
-            agent_icon, worker.agent_type,
-            worker.description[:40], duration, worker.message_count,
+            agent_icon,
+            worker.agent_type,
+            worker.description[:40],
+            duration,
+            worker.message_count,
         )
 
     def _render_detail(self) -> None:
@@ -757,8 +777,10 @@ class OCDashboardApp(App[None]):
         todos = self._todos_by_session.get(session.id, [])
         if todos:
             lines.append("")
-            lines.append(" [cyan]%s Todos (%s/%s) %s[/]" % (
-                _HBAR * 2, session.completed, session.total, _HBAR * 20))
+            lines.append(
+                " [cyan]%s Todos (%s/%s) %s[/]"
+                % (_HBAR * 2, session.completed, session.total, _HBAR * 20)
+            )
             for todo in todos:
                 icon = TODO_ICONS.get(todo.status, _SQ_O)
                 lines.append("  %s %s" % (icon, todo.content))
@@ -783,7 +805,9 @@ class OCDashboardApp(App[None]):
             for worker in recent_workers[:8]:
                 lines.append(self._format_worker_line(worker, running=False))
             if len(recent_workers) > 8:
-                lines.append("  [dim]... %s more historical[/]" % (len(recent_workers) - 8))
+                lines.append(
+                    "  [dim]... %s more historical[/]" % (len(recent_workers) - 8)
+                )
 
         if len(lines) <= 2:
             lines.append("")
@@ -839,6 +863,70 @@ class OCDashboardApp(App[None]):
                 review_col = Text(pr.review_status)
 
             table.add_row(pr_col, ci_col, title_col, review_col)
+
+    def _format_money(self, amount: float) -> str:
+        if amount >= 100:
+            return "{:,.0f}".format(amount)
+        if amount >= 10:
+            return "{:.1f}".format(amount)
+        return "{:.2f}".format(amount)
+
+    def _render_spend(self) -> None:
+        body = self.query_one("#spend-body", Static)
+        if not self._daily_spend:
+            body.update(" [dim]No spend data[/]")
+            return
+
+        panel_w = body.size.width if body.size.width else 0
+        window = 14
+        if 0 < panel_w < 28:
+            window = 10
+        if 0 < panel_w < 20:
+            window = 7
+
+        points = self._daily_spend[-window:]
+        values = [max(0.0, p.total_cost) for p in points]
+        total = sum(values)
+        avg = (total / len(values)) if values else 0.0
+        peak = max(values) if values else 0.0
+        latest = values[-1] if values else 0.0
+
+        if values:
+            peak_idx = values.index(peak)
+            peak_day = (
+                points[peak_idx].day[5:]
+                if len(points[peak_idx].day) >= 10
+                else points[peak_idx].day
+            )
+        else:
+            peak_day = "--"
+
+        levels = [".", _SHADE1, _SHADE2, _SHADE3, _FULL]
+        spark_chars = []
+        for value in values:
+            if peak <= 0:
+                idx = 0
+            else:
+                ratio = value / peak
+                idx = int(round(ratio * (len(levels) - 1)))
+                idx = max(0, min(len(levels) - 1, idx))
+            spark_chars.append(levels[idx])
+        spark = "".join(spark_chars)
+
+        start_day = points[0].day[5:] if points and len(points[0].day) >= 10 else "--"
+        end_day = points[-1].day[5:] if points and len(points[-1].day) >= 10 else "--"
+
+        lines = [
+            " [bold green]%s $%s[/]  [dim](%sd total)[/]"
+            % (_DOLLAR, self._format_money(total), len(points)),
+            " [dim]avg[/] $%s/day  [dim]peak[/] %s $%s"
+            % (self._format_money(avg), peak_day, self._format_money(peak)),
+            " [green]%s[/]" % spark,
+            " [dim]%s ... %s[/]" % (start_day, end_day),
+            " [dim]latest[/] $%s" % self._format_money(latest),
+        ]
+        body.update("\n".join(lines))
+
     # ── Next Ops panel ──────────────────────────────────
 
     def _render_next_ops(self) -> None:
@@ -855,7 +943,12 @@ class OCDashboardApp(App[None]):
         lines = []  # type: list
         for rec in recs:
             pri_icon = PRIORITY_ICONS.get(rec.priority, _O)
-            pc = {"critical": "#ff2a6d", "high": "#ffb000", "medium": "#00d4ff", "low": "#3d5040"}.get(rec.priority, "#c9a8ff")
+            pc = {
+                "critical": "#ff2a6d",
+                "high": "#ffb000",
+                "medium": "#00d4ff",
+                "low": "#3d5040",
+            }.get(rec.priority, "#c9a8ff")
             lines.append(" [%s]%s %s[/] %s" % (pc, pri_icon, rec.icon, rec.text))
         body.update("\n".join(lines))
 
@@ -871,7 +964,7 @@ class OCDashboardApp(App[None]):
         # Show most recent events, newest first
         events = list(self._log_events)
         events.reverse()
-        for ev in events[:20]:
+        for ev in events[:8]:
             display = EVENT_DISPLAY.get(ev.event_type)
             if display is None:
                 icon = _INFO
@@ -889,19 +982,34 @@ class OCDashboardApp(App[None]):
                 if len(to_b) > 20:
                     to_b = to_b[:17] + "..."
                 text = " %s %s  %s [bold]%s[/]" % (ts, icon, from_b, to_b)
+            elif ev.event_type == "command.executed":
+                command = ev.fields.get("command", "")
+                command = command.strip() if command else ""
+                if command.startswith("git commit"):
+                    text = " %s %s  [bold cyan]git commit[/]" % (ts, icon)
+                elif command.startswith("git push"):
+                    text = " %s %s  [bold cyan]git push[/]" % (ts, icon)
+                elif command.startswith("gh pr"):
+                    text = " %s %s  [bold cyan]gh pr[/]" % (ts, icon)
+                elif command:
+                    if len(command) > 42:
+                        command = command[:39] + "..."
+                    text = " %s %s  [cyan]%s[/]" % (ts, icon, command)
+                else:
+                    text = " %s %s  %s" % (ts, icon, label)
             elif ev.event_type == "session.error":
                 text = " %s %s  [bold red]%s %s[/]" % (ts, icon, _EXCL, label)
             elif ev.event_type == "watchdog.kill":
                 detail = ev.fields.get("detail", "process killed")
                 text = " %s %s  [bold red]%s[/]" % (ts, icon, detail)
             elif ev.event_type == "ci.failed":
-                text = " %s %s  [bold red]%s %s[/]" % (ts, icon, _EXCL, ev.raw)
+                detail = ev.fields.get("detail", "CI failing")
+                text = " %s %s  [bold red]%s %s[/]" % (ts, icon, _EXCL, detail)
             else:
                 text = " %s %s  %s" % (ts, icon, label)
 
             lines.append(text)
         body.update("\n".join(lines))
-
 
     def _init_branch(self) -> None:
         """Get current git branch from the project path."""
@@ -909,6 +1017,7 @@ class OCDashboardApp(App[None]):
             return  # already set from log backfill
         try:
             from .data import discover_project_path
+
             pp = discover_project_path()
             if pp:
                 result = subprocess.run(

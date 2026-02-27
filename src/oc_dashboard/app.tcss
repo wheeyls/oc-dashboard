@@ -58,11 +58,15 @@ Screen {
 }
 
 #comms-panel {
-    width: 3fr;
+    width: 1fr;
+}
+
+#spend-panel {
+    width: 2fr;
 }
 
 #next-panel {
-    width: 2fr;
+    width: 3fr;
 }
 
 #pr-panel {
@@ -78,6 +82,12 @@ Screen {
 #comms-body {
     height: 1fr;
     color: #00ff41;
+    padding: 0 0 1 0;
+}
+
+#spend-body {
+    height: 1fr;
+    color: #95ffad;
     padding: 0 0 1 0;
 }
 
@@ -168,16 +178,18 @@ Screen.compact #sessions-panel {
     height: 1fr;
 }
 
-Screen.compact #next-panel {
-    display: none;
-}
-
 Screen.compact #bottom-row {
     layout: vertical;
     height: 4fr;
 }
 
 Screen.compact #comms-panel {
+    display: none;
+    width: 1fr;
+    height: 1fr;
+}
+
+Screen.compact #spend-panel {
     width: 1fr;
     height: 1fr;
 }

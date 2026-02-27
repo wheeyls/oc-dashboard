@@ -11,8 +11,8 @@ Hacker-aesthetic TUI for monitoring [OpenCode](https://github.com/sst/opencode) 
 - **CI failure alerts** — Failed PRs sort to top in bold red, topbar badge, error flash, COMMS event
 - **Next Ops** — Priority-ranked recommendations: resume stalled sessions, request reviews, fix failing CI
 - **Memory watchdog** — Kills runaway `opencode` processes exceeding 8GB RSS (SIGTERM → SIGKILL)
-- **Cost tracking** — Per-session cost column + cumulative $ in topbar
-- **Tmux integration** — Press Enter to open a session in a 25% tmux split pane
+- **Cost tracking** — Per-session cost column, cumulative $ in topbar, and daily spend chart panel
+- **Tmux integration** — Press Enter to open a session in a 50% tmux split pane
 - **PR browser** — Press `o` to open a PR in your browser
 - **Responsive layout** — Adapts to narrow viewports (hides panels, stacks vertically)
 - **Auto-refresh** — SQLite WAL file watching triggers re-render on DB changes
