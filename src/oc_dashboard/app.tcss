@@ -1,6 +1,8 @@
 Screen {
+    layout: vertical;
     background: #000000;
     color: #a8b1ba;
+    overflow: hidden;
     scrollbar-background: #0a0a0a;
     scrollbar-color: #0a3d1a;
     scrollbar-color-hover: #00ff41;
@@ -25,6 +27,7 @@ Screen {
 #main {
     layout: vertical;
     height: 1fr;
+    overflow: hidden;
 }
 
 #top-row {
