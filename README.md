@@ -1,80 +1,117 @@
 # oc-dashboard
 
-Hacker-aesthetic TUI for monitoring [OpenCode](https://github.com/sst/opencode) sessions, PRs, costs, and system health.
+> **Human:** Point your AI agent at this README and tell it to install oc-dashboard.
+>
+> ```
+> Install oc-dashboard: https://github.com/wheeyls/oc-dashboard
+> ```
+>
+> That's it. Your agent handles the rest.
 
-![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-green) ![Textual](https://img.shields.io/badge/tui-textual-blue)
+---
 
-## Features
+## Agent Instructions
 
-- **Session tree** — Sessions grouped by repo with fork nesting (`├─ / └─`), sorted by effective recency (child activity bubbles parents up)
-- **Live COMMS feed** — Real-time event stream from OpenCode logs (bus events, VCS branch changes, errors)
-- **CI failure alerts** — Failed PRs sort to top in bold red, topbar badge, error flash, COMMS event
-- **Next Ops** — Priority-ranked recommendations: resume stalled sessions, request reviews, fix failing CI
-- **Memory watchdog** — Kills runaway `opencode` processes exceeding 8GB RSS (SIGTERM → SIGKILL)
-- **Cost tracking** — Per-session cost column, cumulative $ in topbar, and daily spend chart panel
-- **Tmux integration** — Press Enter to open a session in a 50% tmux split pane
-- **PR browser** — Press `o` to open a PR in your browser
-- **Responsive layout** — Adapts to narrow viewports (hides panels, stacks vertically)
-- **Auto-refresh** — SQLite WAL file watching triggers re-render on DB changes
+You are installing **oc-dashboard**, a TUI for monitoring OpenCode sessions with a built-in Kanban board for tracking projects across sessions.
 
-## Install
+### Prerequisites
+
+Verify these are available before proceeding. Do NOT install them — if missing, tell the user what's needed.
+
+- **Python 3.9+** — `python3 --version`
+- **OpenCode** — `~/.local/share/opencode/opencode.db` should exist (the user is running OpenCode if they're asking you to install this)
+- **gh CLI** — `gh --version` (used for PR data)
+- **tmux** — `tmux -V` (used to open sessions in split panes)
+- **Nerd Font** — the user's terminal must use a [Nerd Font](https://www.nerdfonts.com/) (icons will render as boxes otherwise). Don't check for this — just mention it if the dashboard looks broken.
+
+### Step 1: Clone and Install
 
 ```bash
-# Clone and set up
-git clone https://github.com/wheeyls/oc-dashboard.git
-cd oc-dashboard
+git clone https://github.com/wheeyls/oc-dashboard.git ~/.local/share/oc-dashboard
+cd ~/.local/share/oc-dashboard
 python3 -m venv .venv
 .venv/bin/pip install -e .
-
-# Symlink to PATH (optional)
-ln -sf "$(pwd)/.venv/bin/oc-dashboard" ~/.local/bin/oc-dashboard
 ```
 
-## Usage
+### Step 2: Add to PATH
+
+```bash
+ln -sf ~/.local/share/oc-dashboard/.venv/bin/oc-dashboard ~/.local/bin/oc-dashboard
+ln -sf ~/.local/share/oc-dashboard/.venv/bin/oc-kanban ~/.local/bin/oc-kanban
+```
+
+Verify: `oc-kanban list` should return without error (empty output is fine).
+
+If `~/.local/bin` is not on the user's PATH, tell them to add it:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Step 3: Install the Kanban Skill
+
+The skill teaches OpenCode agents how to use the Kanban board automatically — creating projects, linking sessions, moving stages.
+
+```bash
+ln -sf ~/.local/share/oc-dashboard/skills/kanban-board ~/.config/opencode/skills/kanban-board
+```
+
+Create the skills directory first if it doesn't exist:
+
+```bash
+mkdir -p ~/.config/opencode/skills
+```
+
+Verify: the skill directory should contain `SKILL.md`:
+
+```bash
+ls ~/.config/opencode/skills/kanban-board/SKILL.md
+```
+
+### Step 4: Launch
+
+Tell the user to run:
 
 ```bash
 oc-dashboard
 ```
 
-### Keybindings
+### Post-Install: Quick Orientation for the User
 
-| Key       | Action                          |
-| --------- | ------------------------------- |
-| `j` / `k` | Navigate sessions (vim-style)   |
-| `Enter`   | Open session in tmux split pane |
-| `o`       | Open selected PR in browser     |
-| `r`       | Force refresh                   |
-| `q`       | Quit                            |
+After installing, tell the user:
 
-## Requirements
+**The dashboard is a Kanban board** with three columns: Pending, In Progress, and Done. It also monitors your OpenCode sessions, PRs, costs, and system health in real-time.
 
-- Python 3.9+
-- [OpenCode](https://github.com/sst/opencode) installed (`~/.local/share/opencode/opencode.db`)
-- [Nerd Font](https://www.nerdfonts.com/) patched terminal font (icons use FA range U+F000–F2E0)
-- `gh` CLI (for PR data)
-- tmux (for session opening)
+**Keyboard shortcuts:**
 
-## Layout
+| Key                 | Action                                   |
+| ------------------- | ---------------------------------------- |
+| `tab` / `shift+tab` | Move between columns                     |
+| `j` / `k`           | Navigate within a column                 |
+| `enter`             | Open linked session (picks if multiple)  |
+| `a`                 | Add a new project                        |
+| `m` / `M`           | Move project right / left through stages |
+| `s`                 | Link a session to the selected project   |
+| `u`                 | Unlink a session                         |
+| `p`                 | Link a PR number                         |
+| `d`                 | Delete a project                         |
+| `S`                 | Open the sessions browser                |
+| `r`                 | Force refresh                            |
+| `q`                 | Quit                                     |
 
-```
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃  OC//DASH  15:48:23  3 LIVE  1 STALLED  $1,300            ┃
-┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
-┃  SESSIONS                   ┃  INTEL                      ┃
-┃   ue                        ┃  ● LIVE │ Session title     ┃
-┃  ├─  Session A         now  ┃  mem 1.2GB                  ┃
-┃  │  └─  Session A (fork)    ┃  ── Todos (3/5) ──          ┃
-┃  ├─  Session B         2h   ┃                             ┃
-┃  └─  Session C         1d   ┃                             ┃
-┃   spanish                   ┃                             ┃
-┃  └─  Session D         3d   ┃                             ┃
-┣━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
-┃  COMMS    ┃ NEXT OPS┃  PULL REQUESTS                      ┃
-┃  events   ┃ actions ┃  #123  ✓  Title          Approved   ┃
-┗━━━━━━━━━━━┻━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+**The Kanban skill is now active.** When you start significant work in OpenCode, your agent will automatically create and track projects on the board. You can also ask your agent things like "what am I working on?" or "move my project to done."
+
+## Updating
+
+```bash
+cd ~/.local/share/oc-dashboard && git pull
 ```
 
-At narrow widths (<100 cols), Intel and Next Ops hide automatically; panels stack vertically.
+The `-e` (editable) pip install means `git pull` is sufficient — no reinstall needed unless dependencies change. If dependencies changed:
+
+```bash
+cd ~/.local/share/oc-dashboard && .venv/bin/pip install -e .
+```
 
 ## License
 

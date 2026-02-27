@@ -5,7 +5,7 @@ description: Manages project Kanban board for tracking work across sessions. Use
 
 # Kanban Board — Project Tracking via `oc-kanban`
 
-Track projects through stages: **pending → in_progress → pr → done**.
+Track projects through stages: **pending → in_progress → done**.
 Each project can have linked OpenCode sessions and GitHub PRs.
 
 ## CLI Reference
@@ -47,14 +47,13 @@ oc-kanban update <project_id> --desc "Updated description"
 ```bash
 # Move to next stage
 oc-kanban move <project_id> in_progress
-oc-kanban move <project_id> pr
 oc-kanban move <project_id> done
 
 # Move back if needed
 oc-kanban move <project_id> pending
 ```
 
-Valid stages in order: `pending`, `in_progress`, `pr`, `done`
+Valid stages in order: `pending`, `in_progress`, `done`
 
 ### Link Sessions & PRs
 
@@ -90,13 +89,9 @@ Then link the current session. The session ID is available from the environment 
 
 ### Creating a PR
 
-When you create a PR via `gh pr create`, also:
-
-1. Move the project to `pr` stage
-2. Link the PR number
+When you create a PR via `gh pr create`, link the PR number:
 
 ```bash
-oc-kanban move <project_id> pr
 oc-kanban link-pr <project_id> <pr_number>
 ```
 
@@ -135,4 +130,4 @@ Projects are stored in `~/.local/share/oc-dashboard/kanban.json`. The backend is
 
 ## Integration with oc-dashboard TUI
 
-The user can view the board visually by pressing `b` in the oc-dashboard TUI. The board shows all 4 columns with project cards, linked sessions, and PR status. The TUI and CLI share the same JSON file — changes from either side are immediately visible to the other.
+The user can view the board visually by running `oc-dashboard`. The board shows 3 columns with project cards, linked sessions, and PR status. The TUI and CLI share the same JSON file — changes from either side are immediately visible to the other.
