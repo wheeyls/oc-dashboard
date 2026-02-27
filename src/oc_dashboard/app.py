@@ -244,13 +244,13 @@ class OCDashboardApp(App[None]):
                 with Container(id="detail-panel"):
                     yield Static(" %s PROJECT" % _EYE, classes="panel-title")
                     yield Static("", id="detail-body")
+            with Container(id="kanban-input-bar"):
+                yield Static("", id="kanban-input-label")
+                yield Input(id="kanban-input", placeholder="")
             with Container(id="bottom-row"):
                 with Container(id="sessions-panel", classes="panel"):
                     yield Static(" %s SESSIONS" % _LIST, classes="panel-title")
                     yield DataTable(id="sessions-table")
-        with Container(id="kanban-input-bar"):
-            yield Static("", id="kanban-input-label")
-            yield Input(id="kanban-input", placeholder="")
         yield Static("", id="footerbar")
 
     def on_mount(self) -> None:

@@ -10,8 +10,8 @@ Screen {
 }
 
 #topbar {
-    height: 3;
-    padding: 1 2;
+    height: 2;
+    padding: 0 2;
     background: #010409;
     color: #00ff41;
     text-style: bold;
