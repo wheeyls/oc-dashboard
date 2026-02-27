@@ -18,13 +18,13 @@ Screen {
 }
 
 #kanban-row {
-    layout: horizontal;
+    layout: vertical;
     height: 1fr;
 }
 
 #kanban-area {
     layout: horizontal;
-    width: 3fr;
+    height: 3fr;
 }
 
 .kanban-column {
@@ -63,9 +63,13 @@ KanbanList:focus > .option-list--option-highlighted {
 }
 
 #detail-panel {
-    width: 2fr;
-    border: heavy #0a3d1a;
+    height: 2fr;
+    border-top: heavy #0a3d1a;
     padding: 0 1;
+}
+
+#detail-panel.hidden {
+    display: none;
 }
 
 .panel-title {
@@ -77,6 +81,7 @@ KanbanList:focus > .option-list--option-highlighted {
 #detail-body {
     height: 1fr;
     color: #7a8490;
+    overflow-y: auto;
 }
 
 #bottom-bar {

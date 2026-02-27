@@ -429,6 +429,7 @@ class OCDashboardApp(App[None]):
         self.set_interval(5, self._watchdog)
         # Focus first column after mount settles
         self.set_timer(0.05, self._init_kanban_focus)
+        self._apply_compact_mode(self.size.width, self.size.height)
 
     def _init_kanban_focus(self) -> None:
         """Set initial focus + highlight on the first non-empty column."""
@@ -441,6 +442,17 @@ class OCDashboardApp(App[None]):
                 return
         # All columns empty, focus first anyway
         self.query_one("#list-pending", KanbanList).focus()
+
+    def on_resize(self, event) -> None:
+        self._apply_compact_mode(event.size.width, event.size.height)
+
+    def _apply_compact_mode(self, width, height):
+        # type: (int, int) -> None
+        panel = self.query_one("#detail-panel", Container)
+        if height < 20 or width < 60:
+            panel.add_class("hidden")
+        else:
+            panel.remove_class("hidden")
 
     # ── Live features ──────────────────────────────────────────────────
 
