@@ -32,12 +32,34 @@ Screen {
     height: 7fr;
 }
 
-#bottom-row {
+#kanban-area {
     layout: horizontal;
-    height: 3fr;
+    width: 3fr;
 }
 
-.panel {
+.kanban-column {
+    width: 1fr;
+    border: heavy #0a3d1a;
+    padding: 0 1;
+}
+
+.kanban-column.active-column {
+    border: heavy #00ff41;
+}
+
+.column-title {
+    height: 1;
+    color: #00d4ff;
+    text-style: bold;
+}
+
+.column-body {
+    height: 1fr;
+    color: #a8b1ba;
+}
+
+#detail-panel {
+    width: 2fr;
     border: heavy #0a3d1a;
     margin: 0;
     padding: 0 1;
@@ -49,34 +71,29 @@ Screen {
     text-style: bold;
 }
 
-#sessions-panel {
-    width: 3fr;
-}
-
-#detail-panel {
-    width: 2fr;
-}
-
-#comms-panel {
-    width: 1fr;
-}
-
-#spend-panel {
-    width: 2fr;
-}
-
-#next-panel {
-    width: 3fr;
-}
-
-#pr-panel {
-    width: 3fr;
-}
-
 #detail-body {
     height: 1fr;
     color: #7a8490;
     padding: 0 0 1 0;
+}
+
+#bottom-row {
+    layout: horizontal;
+    height: 3fr;
+}
+
+.panel {
+    border: heavy #0a3d1a;
+    margin: 0;
+    padding: 0 1;
+}
+
+#sessions-panel {
+    width: 3fr;
+}
+
+#comms-panel {
+    width: 2fr;
 }
 
 #comms-body {
@@ -85,16 +102,8 @@ Screen {
     padding: 0 0 1 0;
 }
 
-#spend-body {
-    height: 1fr;
-    color: #95ffad;
-    padding: 0 0 1 0;
-}
-
-#next-body {
-    height: 1fr;
-    color: #c9a8ff;
-    padding: 0 0 1 0;
+#pr-panel {
+    width: 3fr;
 }
 
 DataTable {
@@ -127,6 +136,33 @@ DataTable:focus {
     border: none;
 }
 
+#kanban-input-bar {
+    height: 3;
+    padding: 0 1;
+    background: #001a00;
+    border-top: heavy #0a3d1a;
+    display: none;
+}
+
+#kanban-input-bar.visible {
+    display: block;
+}
+
+#kanban-input-bar Input {
+    background: #000000;
+    color: #00ff41;
+    border: heavy #0a3d1a;
+}
+
+#kanban-input-bar Input:focus {
+    border: heavy #00ff41;
+}
+
+#kanban-input-label {
+    height: 1;
+    color: #00d4ff;
+}
+
 #footerbar {
     height: 1;
     padding: 0 1;
@@ -142,7 +178,7 @@ Screen.narrow #top-row {
     layout: vertical;
 }
 
-Screen.narrow #sessions-panel {
+Screen.narrow #kanban-area {
     width: 1fr;
     height: 5fr;
 }
@@ -174,7 +210,7 @@ Screen.compact #top-row {
     height: 6fr;
 }
 
-Screen.compact #sessions-panel {
+Screen.compact #kanban-area {
     height: 1fr;
 }
 
@@ -185,11 +221,9 @@ Screen.compact #bottom-row {
 
 Screen.compact #comms-panel {
     display: none;
-    width: 1fr;
-    height: 1fr;
 }
 
-Screen.compact #spend-panel {
+Screen.compact #sessions-panel {
     width: 1fr;
     height: 1fr;
 }

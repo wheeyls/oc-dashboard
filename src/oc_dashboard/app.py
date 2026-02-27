@@ -4,14 +4,14 @@ import subprocess
 import webbrowser
 from collections import deque
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
-from textual.widgets import DataTable, Static
+from textual.containers import Container, Horizontal
+from textual.widgets import DataTable, Input, Static
 
 from .data import BackgroundWorker
 from .data import DashboardSnapshot
@@ -23,7 +23,12 @@ from .data import session_status
 from .data import CI_PASS, CI_FAIL, CI_PENDING
 from .data import LogEvent, get_wal_mtime, find_latest_log, parse_log_line
 from .data import fetch_running_processes
-from .kanban import LocalJsonKanban
+from .kanban import (
+    STAGES,
+    STAGE_LABELS,
+    KanbanProject,
+    LocalJsonKanban,
+)
 
 
 # ── Nerd Font icons ─────────────────────────────────────
@@ -33,6 +38,7 @@ _TIMES = chr(0xF00D)
 _COG = chr(0xF013)
 _SEARCH = chr(0xF002)
 _BOOK = chr(0xF02D)
+_TAG = chr(0xF02B)
 _LIST = chr(0xF03A)
 _PLAY = chr(0xF04B)
 _INFO = chr(0xF05A)
@@ -69,7 +75,7 @@ _SHADE1 = chr(0x2591)
 _SKULL = chr(0xF05E)
 _PIPE = chr(0x2502)
 _HBAR = chr(0x2500)
-_FOLDER = chr(0xF07B)  # nf-fa-folder
+_FOLDER = chr(0xF07B)
 
 STATUS_ICONS = {
     "running": _CIRCLE,
@@ -103,6 +109,13 @@ PRIORITY_ICONS = {
     "low": _O,
 }
 
+STAGE_ICONS = {
+    "pending": _SQ_O,
+    "in_progress": _SPIN,
+    "pr": _FORK,
+    "done": _CHECK_CIRCLE,
+}
+
 # ── Event display mapping for Comms panel ───────────────
 EVENT_DISPLAY = {
     "session.error": (_EXCL, "ERROR"),
@@ -116,7 +129,14 @@ EVENT_DISPLAY = {
 
 ACTIVE_WORKER_WINDOW = timedelta(minutes=3)
 COMMS_MAX_EVENTS = 16
-MEM_KILL_THRESHOLD_MB = 8192  # 8GB — processes above this get killed
+MEM_KILL_THRESHOLD_MB = 8192  # 8GB
+
+# ── Kanban input modes ──────────────────────────────────
+MODE_NORMAL = "normal"
+MODE_ADD_TITLE = "add_title"
+MODE_ADD_DESC = "add_desc"
+MODE_LINK_SESSION = "link_session"
+MODE_LINK_PR = "link_pr"
 
 
 def _in_tmux():
@@ -126,12 +146,7 @@ def _in_tmux():
 
 def _launch_session_in_tmux(session_id, project_path=None):
     # type: (str, ...) -> None
-    """Open an opencode session in a new tmux pane.
-
-    Uses 'remain-on-exit off' so the pane auto-closes when opencode exits
-    normally (user presses q), but opencode itself survives pane death
-    because we run it under setsid to give it its own process group.
-    """
+    """Open an opencode session in a new tmux pane."""
     oc_cmd = "opencode -s %s" % session_id
     if project_path:
         oc_cmd = "cd %s && %s" % (project_path, oc_cmd)
@@ -146,7 +161,6 @@ def _launch_session_in_tmux(session_id, project_path=None):
         except Exception:
             pass
     else:
-        # Fallback: open in a new Terminal.app window (macOS)
         apple_script = 'tell application "Terminal" to do script "%s"' % oc_cmd.replace(
             '"', '\\"'
         )
@@ -165,11 +179,22 @@ class OCDashboardApp(App[None]):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
-        Binding("b", "kanban", "Board"),
         Binding("o", "open_pr", "Open PR"),
-        Binding("enter", "open_session", "Open Session"),
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
+        Binding("h", "col_left", "Left col", show=False),
+        Binding("l", "col_right", "Right col", show=False),
+        Binding("left", "col_left", "Left col", show=False),
+        Binding("right", "col_right", "Right col", show=False),
+        Binding("j", "item_down", "Down", show=False),
+        Binding("k", "item_up", "Up", show=False),
+        Binding("down", "item_down", "Down", show=False),
+        Binding("up", "item_up", "Up", show=False),
+        Binding("m", "move_right", "Move right"),
+        Binding("shift+m", "move_left", "Move left", show=False),
+        Binding("a", "add_project", "Add"),
+        Binding("s", "link_session", "Link session"),
+        Binding("p", "link_pr", "Link PR"),
+        Binding("d", "delete_project", "Delete"),
+        Binding("enter", "activate_selected", "Open"),
     ]
 
     def __init__(self) -> None:
@@ -196,30 +221,45 @@ class OCDashboardApp(App[None]):
         self._total_cost = 0.0
         self._watchdog_warned = set()  # type: set
         self._prev_ci_fail_count = 0
+        # Kanban state
+        self._kanban = LocalJsonKanban()
+        self._col_idx = 0
+        self._row_idx = {}  # type: Dict[str, int]
+        for s in STAGES:
+            self._row_idx[s] = 0
+        self._projects_by_stage = {}  # type: Dict[str, List[KanbanProject]]
+        self._mode = MODE_NORMAL
+        self._pending_title = ""
 
     def compose(self) -> ComposeResult:
         yield Static("", id="topbar")
         with Container(id="main"):
             with Container(id="top-row"):
-                with Container(id="sessions-panel", classes="panel"):
-                    yield Static(" %s SESSIONS" % _LIST, classes="panel-title")
-                    yield DataTable(id="sessions-table")
-                with Container(id="detail-panel", classes="panel"):
+                with Container(id="kanban-area"):
+                    for stage in STAGES:
+                        with Container(id="col-%s" % stage, classes="kanban-column"):
+                            yield Static(
+                                "", id="title-%s" % stage, classes="column-title"
+                            )
+                            yield Static(
+                                "", id="body-%s" % stage, classes="column-body"
+                            )
+                with Container(id="detail-panel"):
                     yield Static(" %s INTEL" % _EYE, classes="panel-title")
                     yield Static("", id="detail-body")
             with Container(id="bottom-row"):
+                with Container(id="sessions-panel", classes="panel"):
+                    yield Static(" %s SESSIONS" % _LIST, classes="panel-title")
+                    yield DataTable(id="sessions-table")
                 with Container(id="comms-panel", classes="panel"):
                     yield Static(" %s COMMS" % _SIGNAL, classes="panel-title")
                     yield Static("", id="comms-body")
-                with Container(id="spend-panel", classes="panel"):
-                    yield Static(" %s DAILY SPEND" % _DOLLAR, classes="panel-title")
-                    yield Static("", id="spend-body")
-                with Container(id="next-panel", classes="panel"):
-                    yield Static(" %s NEXT OPS" % _ROCKET, classes="panel-title")
-                    yield Static("", id="next-body")
                 with Container(id="pr-panel", classes="panel"):
                     yield Static(" %s PULL REQUESTS" % _FORK, classes="panel-title")
                     yield DataTable(id="pr-table")
+        with Container(id="kanban-input-bar"):
+            yield Static("", id="kanban-input-label")
+            yield Input(id="kanban-input", placeholder="")
         yield Static("", id="footerbar")
 
     def on_mount(self) -> None:
@@ -242,6 +282,9 @@ class OCDashboardApp(App[None]):
         # Seed current branch from git
         self._init_branch()
 
+        # Kanban
+        self._refresh_kanban()
+
         self._render_topbar()
         self._render_footerbar()
         _ = self.refresh_dashboard()
@@ -250,7 +293,6 @@ class OCDashboardApp(App[None]):
         self.set_interval(2, self._tick)
         self.set_interval(0.5, self._poll_log)
         self.set_interval(3, self._check_wal)
-
         self.set_interval(5, self._watchdog)
 
     def on_resize(self, event) -> None:
@@ -276,8 +318,7 @@ class OCDashboardApp(App[None]):
         if not latest:
             return
         if self._log_path == latest and self._log_handle is not None:
-            return  # already tailing this file
-        # Close old handle
+            return
         if self._log_handle is not None:
             try:
                 self._log_handle.close()
@@ -285,14 +326,13 @@ class OCDashboardApp(App[None]):
                 pass
         try:
             fh = open(latest, "r", encoding="utf-8", errors="replace")
-            # Backfill: read last ~8KB to seed Comms panel
             try:
-                fh.seek(0, 2)  # seek to end
+                fh.seek(0, 2)
                 end_pos = fh.tell()
                 backfill_pos = max(0, end_pos - 8192)
                 fh.seek(backfill_pos)
                 if backfill_pos > 0:
-                    fh.readline()  # discard partial line
+                    fh.readline()
                 for backfill_line in fh:
                     ev = parse_log_line(backfill_line)
                     if ev is not None:
@@ -302,7 +342,7 @@ class OCDashboardApp(App[None]):
                             if to_branch and to_branch != "HEAD":
                                 self._current_branch = to_branch
             except Exception:
-                fh.seek(0, 2)  # fallback: just go to end
+                fh.seek(0, 2)
             self._log_handle = fh
             self._log_path = latest
         except Exception:
@@ -311,7 +351,6 @@ class OCDashboardApp(App[None]):
 
     def _poll_log(self) -> None:
         """Read new lines from log file, parse events, update comms."""
-        # Check if log file rotated
         latest = find_latest_log()
         if latest and latest != self._log_path:
             self._open_latest_log()
@@ -321,7 +360,7 @@ class OCDashboardApp(App[None]):
 
         new_events = False
         try:
-            for _ in range(200):  # cap reads per poll
+            for _ in range(200):
                 line = self._log_handle.readline()
                 if not line:
                     break
@@ -331,17 +370,14 @@ class OCDashboardApp(App[None]):
                 self._log_events.append(event)
                 new_events = True
 
-                # Track branch changes
                 if event.event_type == "vcs.branch":
                     to_branch = event.fields.get("to", "")
                     if to_branch and to_branch != "HEAD":
                         self._current_branch = to_branch
 
-                # Error flash
                 if event.event_type == "session.error":
                     self._error_flash_until = datetime.now() + timedelta(seconds=5)
         except Exception:
-            # File might have been truncated/removed
             self._log_handle = None
             self._log_path = None
 
@@ -371,7 +407,6 @@ class OCDashboardApp(App[None]):
                 self._watchdog_warned.discard(proc.pid)
                 continue
 
-            # Resolve session info
             session_label = "unknown session"
             if proc.session_id:
                 for s in self._sessions:
@@ -382,7 +417,6 @@ class OCDashboardApp(App[None]):
             mem_gb = proc.mem_mb / 1024.0
 
             if proc.pid in self._watchdog_warned:
-                # Already warned — escalate to SIGKILL
                 try:
                     os.kill(proc.pid, signal.SIGKILL)
                 except OSError:
@@ -390,7 +424,6 @@ class OCDashboardApp(App[None]):
                 msg = "SIGKILL PID %d (%.1fGB) — %s" % (proc.pid, mem_gb, session_label)
                 self._watchdog_warned.discard(proc.pid)
             else:
-                # First offense — SIGTERM
                 try:
                     os.kill(proc.pid, signal.SIGTERM)
                 except OSError:
@@ -416,59 +449,198 @@ class OCDashboardApp(App[None]):
         self._render_topbar()
         self._render_footerbar()
 
-    def action_refresh(self) -> None:
-        _ = self.refresh_dashboard()
+    # ── Actions ────────────────────────────────────────────────────────
 
-    def action_kanban(self) -> None:
-        from .kanban_screen import KanbanScreen
-        self.push_screen(
-            KanbanScreen(
-                sessions=self._sessions,
-                prs=self._snapshot.prs if self._snapshot else [],
-                project_path=self._snapshot.project_path if self._snapshot else None,
-            )
-        )
+    def action_refresh(self) -> None:
+        self._refresh_kanban()
+        _ = self.refresh_dashboard()
 
     def action_open_pr(self) -> None:
         self._open_selected_pr()
 
-    def action_cursor_down(self) -> None:
-        table = self.query_one("#sessions-table", DataTable)
-        table.action_cursor_down()
+    def action_col_left(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        if self._col_idx > 0:
+            self._col_idx -= 1
+            self._render_kanban()
 
-    def action_cursor_up(self) -> None:
-        table = self.query_one("#sessions-table", DataTable)
-        table.action_cursor_up()
+    def action_col_right(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        if self._col_idx < len(STAGES) - 1:
+            self._col_idx += 1
+            self._render_kanban()
 
-    def action_open_session(self) -> None:
-        self._open_selected_session()
+    def action_item_down(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        stage = STAGES[self._col_idx]
+        count = len(self._projects_by_stage.get(stage, []))
+        if count > 0 and self._row_idx[stage] < count - 1:
+            self._row_idx[stage] += 1
+            self._render_kanban()
 
-    def _open_selected_session(self) -> None:
-        if not self._sessions:
+    def action_item_up(self) -> None:
+        if self._mode != MODE_NORMAL:
             return
-        if self._selected_index >= len(self._sessions):
-            return
-        session = self._sessions[self._selected_index]
-        if session.is_group_header:
-            return
-        project_path = session.directory or (
-            self._snapshot.project_path if self._snapshot else None
-        )
-        _launch_session_in_tmux(session.id, project_path)
+        stage = STAGES[self._col_idx]
+        if self._row_idx[stage] > 0:
+            self._row_idx[stage] -= 1
+            self._render_kanban()
 
-    def _open_selected_pr(self) -> None:
-        if not self._snapshot:
+    def action_move_right(self) -> None:
+        if self._mode != MODE_NORMAL:
             return
-        pr_table = self.query_one("#pr-table", DataTable)
-        row_idx = pr_table.cursor_row
-        if row_idx is None or row_idx < 0:
+        project = self._selected_project()
+        if not project:
             return
-        prs = self._snapshot.prs[:10]
-        if row_idx >= len(prs):
+        idx = STAGES.index(project.stage)
+        if idx < len(STAGES) - 1:
+            self._kanban.move_project(project.id, STAGES[idx + 1])
+            self._refresh_kanban()
+
+    def action_move_left(self) -> None:
+        if self._mode != MODE_NORMAL:
             return
-        pr = prs[row_idx]
-        if pr.url:
-            webbrowser.open(pr.url)
+        project = self._selected_project()
+        if not project:
+            return
+        idx = STAGES.index(project.stage)
+        if idx > 0:
+            self._kanban.move_project(project.id, STAGES[idx - 1])
+            self._refresh_kanban()
+
+    def action_add_project(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        self._mode = MODE_ADD_TITLE
+        self._show_input("Project title:", "e.g. Refactor auth flow")
+
+    def action_link_session(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._selected_project()
+        if not project:
+            return
+        self._mode = MODE_LINK_SESSION
+        self._show_input("Session ID or search term:", "ses_... or partial title")
+
+    def action_link_pr(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._selected_project()
+        if not project:
+            return
+        self._mode = MODE_LINK_PR
+        self._show_input("PR number:", "#12345")
+
+    def action_delete_project(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._selected_project()
+        if not project:
+            return
+        self._kanban.delete_project(project.id)
+        self._refresh_kanban()
+
+    def action_activate_selected(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._selected_project()
+        if project and project.session_ids:
+            session_id = project.session_ids[0]
+            project_path = self._snapshot.project_path if self._snapshot else None
+            _launch_session_in_tmux(session_id, project_path)
+
+    # ── Input bar ──────────────────────────────────────────────────────
+
+    def _show_input(self, label, placeholder=""):
+        # type: (str, str) -> None
+        bar = self.query_one("#kanban-input-bar", Container)
+        bar.add_class("visible")
+        lbl = self.query_one("#kanban-input-label", Static)
+        lbl.update(" %s" % label)
+        inp = self.query_one("#kanban-input", Input)
+        inp.value = ""
+        inp.placeholder = placeholder
+        inp.focus()
+
+    def _hide_input(self) -> None:
+        bar = self.query_one("#kanban-input-bar", Container)
+        bar.remove_class("visible")
+        self._mode = MODE_NORMAL
+
+    def on_input_submitted(self, event) -> None:
+        # type: (Input.Submitted) -> None
+        value = event.value.strip()
+
+        if self._mode == MODE_ADD_TITLE:
+            if value:
+                self._pending_title = value
+                self._mode = MODE_ADD_DESC
+                self._show_input(
+                    "Description (optional, enter to skip):", "Brief description..."
+                )
+            else:
+                self._hide_input()
+            return
+
+        if self._mode == MODE_ADD_DESC:
+            self._kanban.create_project(
+                title=self._pending_title,
+                description=value,
+                stage=STAGES[self._col_idx],
+            )
+            self._pending_title = ""
+            self._hide_input()
+            self._refresh_kanban()
+            return
+
+        if self._mode == MODE_LINK_SESSION:
+            if value:
+                project = self._selected_project()
+                if project:
+                    matched = None
+                    for s in self._sessions:
+                        if (
+                            s.id == value
+                            or value in s.id
+                            or value.lower() in s.title.lower()
+                        ):
+                            matched = s.id
+                            break
+                    if matched:
+                        self._kanban.link_session(project.id, matched)
+                    else:
+                        self._kanban.link_session(project.id, value)
+            self._hide_input()
+            self._refresh_kanban()
+            return
+
+        if self._mode == MODE_LINK_PR:
+            if value:
+                project = self._selected_project()
+                if project:
+                    try:
+                        pr_num = int(value.lstrip("#"))
+                        self._kanban.link_pr(project.id, pr_num)
+                    except ValueError:
+                        pass
+            self._hide_input()
+            self._refresh_kanban()
+            return
+
+        self._hide_input()
+
+    def on_key(self, event) -> None:
+        if self._mode != MODE_NORMAL:
+            if event.key == "escape":
+                self._hide_input()
+                event.prevent_default()
+            return
+
+    # ── Event handlers ─────────────────────────────────────────────────
 
     def on_data_table_row_highlighted(
         self, event_obj: DataTable.RowHighlighted
@@ -477,10 +649,9 @@ class OCDashboardApp(App[None]):
         if table.id != "sessions-table":
             return
         if self._refreshing:
-            return  # ignore cursor resets during refresh
+            return
         if event_obj.cursor_row is not None:
             self._selected_index = event_obj.cursor_row
-            self._render_detail()
 
     def on_data_table_row_selected(self, event_obj: DataTable.RowSelected) -> None:
         table = event_obj.data_table
@@ -488,6 +659,8 @@ class OCDashboardApp(App[None]):
             self._open_selected_pr()
         elif table.id == "sessions-table":
             self._open_selected_session()
+
+    # ── Data ───────────────────────────────────────────────────────────
 
     @work(thread=True, exclusive=True)
     def refresh_dashboard(self) -> None:
@@ -544,10 +717,88 @@ class OCDashboardApp(App[None]):
         self._render_detail()
         self._render_prs()
         self._render_comms()
-        self._render_spend()
-        self._render_next_ops()
 
-    # ── Topbar ──────────────────────────────────────────
+    # ── Kanban data ────────────────────────────────────────────────────
+
+    def _refresh_kanban(self) -> None:
+        projects = self._kanban.list_projects()
+        self._projects_by_stage = {}
+        for s in STAGES:
+            self._projects_by_stage[s] = []
+        for p in projects:
+            stage = p.stage if p.stage in STAGES else "pending"
+            self._projects_by_stage[stage].append(p)
+        for s in STAGES:
+            self._projects_by_stage[s].sort(key=lambda p: p.updated_at, reverse=True)
+        for s in STAGES:
+            count = len(self._projects_by_stage[s])
+            if count == 0:
+                self._row_idx[s] = 0
+            elif self._row_idx[s] >= count:
+                self._row_idx[s] = count - 1
+        self._render_kanban()
+
+    def _selected_project(self):
+        # type: () -> Optional[KanbanProject]
+        stage = STAGES[self._col_idx]
+        items = self._projects_by_stage.get(stage, [])
+        idx = self._row_idx.get(stage, 0)
+        if 0 <= idx < len(items):
+            return items[idx]
+        return None
+
+    # ── Rendering: Kanban ──────────────────────────────────────────────
+
+    def _render_kanban(self) -> None:
+        for stage in STAGES:
+            self._render_kanban_column(stage)
+        self._highlight_active_column()
+        self._render_detail()
+
+    def _render_kanban_column(self, stage):
+        # type: (str) -> None
+        items = self._projects_by_stage.get(stage, [])
+        icon = STAGE_ICONS.get(stage, _O)
+        count = len(items)
+        is_active = STAGES[self._col_idx] == stage
+        row_sel = self._row_idx.get(stage, 0)
+
+        title_widget = self.query_one("#title-%s" % stage, Static)
+        title_widget.update(" %s %s (%d)" % (icon, STAGE_LABELS[stage], count))
+
+        lines = []  # type: list
+        if not items:
+            lines.append("  [dim]empty[/]")
+        else:
+            for i, project in enumerate(items):
+                prefix = "[bold green]>[/] " if (is_active and i == row_sel) else "  "
+                title = project.title
+                if len(title) > 28:
+                    title = title[:25] + "..."
+                meta_parts = []
+                if project.session_ids:
+                    meta_parts.append("%d sess" % len(project.session_ids))
+                if project.pr_numbers:
+                    meta_parts.append("%d PR" % len(project.pr_numbers))
+                meta = " [dim](%s)[/]" % ", ".join(meta_parts) if meta_parts else ""
+
+                if is_active and i == row_sel:
+                    lines.append("%s[bold green]%s[/]%s" % (prefix, title, meta))
+                else:
+                    lines.append("%s%s%s" % (prefix, title, meta))
+
+        body_widget = self.query_one("#body-%s" % stage, Static)
+        body_widget.update("\n".join(lines))
+
+    def _highlight_active_column(self) -> None:
+        for i, stage in enumerate(STAGES):
+            col = self.query_one("#col-%s" % stage, Container)
+            if i == self._col_idx:
+                col.add_class("active-column")
+            else:
+                col.remove_class("active-column")
+
+    # ── Rendering: Topbar ──────────────────────────────────────────────
 
     def _render_topbar(self) -> None:
         spinner = _HG[self._tick_count % len(_HG)]
@@ -573,20 +824,17 @@ class OCDashboardApp(App[None]):
         if total_cpu >= 1:
             parts.append("%s %s %d%%" % (_SEP, _COGS, int(round(total_cpu))))
 
-        # Cumulative cost
         if self._total_cost >= 1:
             parts.append(
                 "%s %s $%s" % (_SEP, _DOLLAR, "{:,.0f}".format(self._total_cost))
             )
 
-        # Current branch
         if self._current_branch:
             branch_display = self._current_branch
             if len(branch_display) > 28:
                 branch_display = branch_display[:25] + "..."
             parts.append("%s %s %s" % (_SEP, _BRANCH_ICON, branch_display))
 
-        # CI failure badge — persistent red alert in topbar
         ci_fails = sum(
             1
             for p in (self._snapshot.prs if self._snapshot else [])
@@ -596,7 +844,6 @@ class OCDashboardApp(App[None]):
             parts.append("%s [bold red]%s %s CI FAIL[/]" % (_SEP, _TIMES, ci_fails))
         topbar = self.query_one("#topbar", Static)
 
-        # Error flash: red background for 5s after session.error
         if self._error_flash_until and datetime.now() < self._error_flash_until:
             topbar.add_class("error-flash")
         else:
@@ -607,11 +854,75 @@ class OCDashboardApp(App[None]):
 
     def _render_footerbar(self) -> None:
         self.query_one("#footerbar", Static).update(
-            " q:quit %s r:refresh %s b:board %s o:pr %s enter:session %s j/k:nav"
-            % (_PIPE, _PIPE, _PIPE, _PIPE, _PIPE)
+            " q:quit %s r:refresh %s h/l:columns %s j/k:projects %s m:move %s a:add %s s:link-sess %s p:link-pr %s d:del %s o:open-pr"
+            % (_PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE)
         )
 
-    # ── Sessions table ──────────────────────────────────
+    # ── Rendering: Detail (kanban project) ─────────────────────────────
+
+    def _render_detail(self) -> None:
+        detail = self.query_one("#detail-body", Static)
+        project = self._selected_project()
+        if not project:
+            detail.update(" [dim]No project selected. Press 'a' to create one.[/]")
+            return
+
+        lines = []  # type: list
+        lines.append(
+            " [bold cyan]%s[/]  [dim]%s[/]  [dim]id:%s[/]"
+            % (
+                project.title,
+                STAGE_LABELS.get(project.stage, project.stage),
+                project.id,
+            )
+        )
+        if project.description:
+            desc = project.description
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
+            lines.append(" [dim]%s[/]" % desc)
+
+        lines.append("")
+
+        # Sessions
+        if project.session_ids:
+            sess_parts = []
+            for sid in project.session_ids[:5]:
+                title = sid[:12]
+                for s in self._sessions:
+                    if s.id == sid:
+                        title = s.title[:20]
+                        break
+                sess_parts.append("[cyan]%s[/]" % title)
+            sess_line = " %s Sessions: %s" % (_TERM, "  ".join(sess_parts))
+            if len(project.session_ids) > 5:
+                sess_line += "  [dim]+%d more[/]" % (len(project.session_ids) - 5)
+            lines.append(sess_line)
+        else:
+            lines.append(" [dim]No sessions linked. Press 's' to link one.[/]")
+
+        # PRs
+        if project.pr_numbers:
+            pr_parts = []
+            prs = self._snapshot.prs if self._snapshot else []
+            for num in project.pr_numbers[:5]:
+                status = ""
+                for pr in prs:
+                    if pr.number == num:
+                        status = " %s" % pr.ci_status
+                        break
+                pr_parts.append("[cyan]#%d[/]%s" % (num, status))
+            lines.append(" %s PRs: %s" % (_FORK, "  ".join(pr_parts)))
+
+        # Tags
+        if project.tags:
+            lines.append(
+                " %s %s" % (_TAG, "  ".join("[dim]%s[/]" % t for t in project.tags))
+            )
+
+        detail.update("\n".join(lines))
+
+    # ── Rendering: Sessions table ──────────────────────────────────────
 
     def _format_todos(self, session: SessionSummary) -> str:
         done = session.completed
@@ -643,21 +954,15 @@ class OCDashboardApp(App[None]):
         self._refreshing = True
         table.clear()
 
-        # Pre-compute last-child at each depth for └─ vs ├─
-        # We track: for each "parent context" what is the last child id
-        # depth=1 sessions are children of their group header
-        # depth=2 sessions (forks) are children of a depth=1 session
-        last_child = {}  # type: dict  # parent_key -> last_child_id
+        last_child = {}  # type: dict
         for session in self._sessions:
             if session.depth == 1:
-                # parent is the preceding group header
                 last_child[session.directory] = session.id
             elif session.depth == 2 and session.parent_id:
                 last_child[session.parent_id] = session.id
 
         for session in self._sessions:
             if session.is_group_header:
-                # Repo group header row
                 table.add_row(
                     _FOLDER,
                     session.title,
@@ -687,7 +992,6 @@ class OCDashboardApp(App[None]):
             cost = self._cost_by_session.get(session.id)
             cost_text = "$%.0f" % cost if cost and cost >= 1 else "-"
 
-            # Git-style tree prefix
             if session.depth == 1:
                 is_last = last_child.get(session.directory) == session.id
                 branch = "\u2514\u2500 " if is_last else "\u251c\u2500 "
@@ -709,125 +1013,12 @@ class OCDashboardApp(App[None]):
                 relative_time(session.updated),
                 key=session.id,
             )
-        # Restore cursor position
         if self._sessions:
             safe_idx = min(self._selected_index, len(self._sessions) - 1)
             table.move_cursor(row=safe_idx)
         self._refreshing = False
 
-    # ── Detail / Intel panel ────────────────────────────
-
-    def _format_worker_line(self, worker: BackgroundWorker, running: bool) -> str:
-        agent_icon = AGENT_ICONS.get(worker.agent_type, _QUESTION)
-        delta = worker.updated - worker.created
-        secs = max(1, int(delta.total_seconds()))
-        if secs < 60:
-            duration = "%ss" % secs
-        elif secs < 3600:
-            duration = "%sm" % (secs // 60)
-        else:
-            duration = "%sh" % (secs // 3600)
-        if running:
-            return "  [green]%s %s %s:[/] %s [dim](%s, %s msgs)[/]" % (
-                _PLAY,
-                agent_icon,
-                worker.agent_type,
-                worker.description[:40],
-                duration,
-                worker.message_count,
-            )
-        return "  [dim]- %s %s: %s (%s, %s msgs)[/]" % (
-            agent_icon,
-            worker.agent_type,
-            worker.description[:40],
-            duration,
-            worker.message_count,
-        )
-
-    def _render_detail(self) -> None:
-        detail = self.query_one("#detail-body", Static)
-        if not self._sessions:
-            detail.update(" [dim]No sessions[/]")
-            return
-        if self._selected_index >= len(self._sessions):
-            return
-
-        session = self._sessions[self._selected_index]
-        lines = []  # type: list
-
-        # Group header: show repo path only
-        if session.is_group_header:
-            lines.append(" [bold cyan]%s[/]  %s" % (_FOLDER, session.title))
-            lines.append(" [dim]%s[/]" % session.directory)
-            detail.update("\n".join(lines))
-            return
-
-        # Session header with colored status
-        cpu = self._running_cpu.get(session.id)
-        status = session_status(session, cpu)
-        status_rich = {
-            "running": "[bold green]%s LIVE[/]" % _CIRCLE,
-            "waiting": "[bold yellow]%s WAITING[/]" % _KEYBOARD,
-            "stalled": "[bold red]%s STALLED[/]" % _WARN,
-            "done": "[dim green]%s DONE[/]" % _CHECK_CIRCLE,
-            "old": "[dim]%s OLD[/]" % _O,
-        }
-        status_label = status_rich.get(status, status)
-        lines.append(" %s  [dim]%s[/]  %s" % (status_label, _PIPE, session.title))
-        lines.append(" [dim]%s[/]" % (_HBAR * 40))
-
-        # Memory
-        mem = self._mem_by_session.get(session.id, 0)
-        if mem > 0:
-            if mem >= 1024:
-                mem_str = "%.1fGB" % (mem / 1024.0)
-            else:
-                mem_str = "%dMB" % mem
-            lines.append(" [dim]mem[/] %s" % mem_str)
-
-        # Todos
-        todos = self._todos_by_session.get(session.id, [])
-        if todos:
-            lines.append("")
-            lines.append(
-                " [cyan]%s Todos (%s/%s) %s[/]"
-                % (_HBAR * 2, session.completed, session.total, _HBAR * 20)
-            )
-            for todo in todos:
-                icon = TODO_ICONS.get(todo.status, _SQ_O)
-                lines.append("  %s %s" % (icon, todo.content))
-
-        # Workers
-        workers = self._workers_by_session.get(session.id, [])
-        active_workers = [w for w in workers if self._is_worker_active(session.id, w)]
-        recent_workers = [
-            w
-            for w in workers
-            if w not in active_workers
-            and (datetime.now() - w.updated) <= timedelta(hours=6)
-        ]
-        if active_workers or recent_workers:
-            lines.append("")
-            lines.append(
-                " [cyan]%s Agents (%s live / %s total) %s[/]"
-                % (_HBAR * 2, len(active_workers), len(workers), _HBAR * 16)
-            )
-            for worker in active_workers:
-                lines.append(self._format_worker_line(worker, running=True))
-            for worker in recent_workers[:8]:
-                lines.append(self._format_worker_line(worker, running=False))
-            if len(recent_workers) > 8:
-                lines.append(
-                    "  [dim]... %s more historical[/]" % (len(recent_workers) - 8)
-                )
-
-        if len(lines) <= 2:
-            lines.append("")
-            lines.append("  [dim]No active todos or agents[/]")
-
-        detail.update("\n".join(lines))
-
-    # ── PR table ────────────────────────────────────────
+    # ── Rendering: PR table ────────────────────────────────────────────
 
     def _render_prs(self) -> None:
         table = self.query_one("#pr-table", DataTable)
@@ -835,7 +1026,6 @@ class OCDashboardApp(App[None]):
         if not self._snapshot:
             return
 
-        # Sort: failures first, then pending, then passing
         ci_order = {CI_FAIL: 0, CI_PENDING: 1, CI_PASS: 2}
         prs = sorted(
             self._snapshot.prs[:10],
@@ -844,7 +1034,6 @@ class OCDashboardApp(App[None]):
 
         fail_count = sum(1 for p in prs if p.ci_status == CI_FAIL)
 
-        # Update panel title to show failure count
         pr_title_widget = self.query_one("#pr-panel .panel-title", Static)
         if fail_count > 0:
             pr_title_widget.update(
@@ -858,7 +1047,6 @@ class OCDashboardApp(App[None]):
             title = pr.title if len(pr.title) <= 30 else pr.title[:27] + "..."
 
             if pr.ci_status == CI_FAIL:
-                # RED everything for failures — this needs to be unmissable
                 pr_col = Text("#%s" % pr.number, style="bold red")
                 ci_col = Text("%s FAIL" % _TIMES, style="bold red")
                 title_col = Text(title, style="bold red")
@@ -876,95 +1064,7 @@ class OCDashboardApp(App[None]):
 
             table.add_row(pr_col, ci_col, title_col, review_col)
 
-    def _format_money(self, amount: float) -> str:
-        if amount >= 100:
-            return "{:,.0f}".format(amount)
-        if amount >= 10:
-            return "{:.1f}".format(amount)
-        return "{:.2f}".format(amount)
-
-    def _render_spend(self) -> None:
-        body = self.query_one("#spend-body", Static)
-        if not self._daily_spend:
-            body.update(" [dim]No spend data[/]")
-            return
-
-        panel_w = body.size.width if body.size.width else 0
-        window = 14
-        if 0 < panel_w < 28:
-            window = 10
-        if 0 < panel_w < 20:
-            window = 7
-
-        points = self._daily_spend[-window:]
-        values = [max(0.0, p.total_cost) for p in points]
-        total = sum(values)
-        avg = (total / len(values)) if values else 0.0
-        peak = max(values) if values else 0.0
-        latest = values[-1] if values else 0.0
-
-        if values:
-            peak_idx = values.index(peak)
-            peak_day = (
-                points[peak_idx].day[5:]
-                if len(points[peak_idx].day) >= 10
-                else points[peak_idx].day
-            )
-        else:
-            peak_day = "--"
-
-        levels = [".", _SHADE1, _SHADE2, _SHADE3, _FULL]
-        spark_chars = []
-        for value in values:
-            if peak <= 0:
-                idx = 0
-            else:
-                ratio = value / peak
-                idx = int(round(ratio * (len(levels) - 1)))
-                idx = max(0, min(len(levels) - 1, idx))
-            spark_chars.append(levels[idx])
-        spark = "".join(spark_chars)
-
-        start_day = points[0].day[5:] if points and len(points[0].day) >= 10 else "--"
-        end_day = points[-1].day[5:] if points and len(points[-1].day) >= 10 else "--"
-
-        lines = [
-            " [bold green]%s $%s[/]  [dim](%sd total)[/]"
-            % (_DOLLAR, self._format_money(total), len(points)),
-            " [dim]avg[/] $%s/day  [dim]peak[/] %s $%s"
-            % (self._format_money(avg), peak_day, self._format_money(peak)),
-            " [green]%s[/]" % spark,
-            " [dim]%s ... %s[/]" % (start_day, end_day),
-            " [dim]latest[/] $%s" % self._format_money(latest),
-        ]
-        body.update("\n".join(lines))
-
-    # ── Next Ops panel ──────────────────────────────────
-
-    def _render_next_ops(self) -> None:
-        body = self.query_one("#next-body", Static)
-        if not self._snapshot:
-            body.update(" No data")
-            return
-
-        recs = self._snapshot.recommendations[:8]
-        if not recs:
-            body.update(" %s All clear -- no action items" % _CHECK)
-            return
-
-        lines = []  # type: list
-        for rec in recs:
-            pri_icon = PRIORITY_ICONS.get(rec.priority, _O)
-            pc = {
-                "critical": "#ff2a6d",
-                "high": "#ffb000",
-                "medium": "#00d4ff",
-                "low": "#3d5040",
-            }.get(rec.priority, "#c9a8ff")
-            lines.append(" [%s]%s %s[/] %s" % (pc, pri_icon, rec.icon, rec.text))
-        body.update("\n".join(lines))
-
-    # ── Comms panel (live event feed) ───────────────────
+    # ── Rendering: Comms (live event feed) ─────────────────────────────
 
     def _render_comms(self) -> None:
         body = self.query_one("#comms-body", Static)
@@ -973,7 +1073,6 @@ class OCDashboardApp(App[None]):
             return
 
         lines = []  # type: list
-        # Show most recent events, newest first
         events = list(self._log_events)
         events.reverse()
         for ev in events[:8]:
@@ -1023,10 +1122,39 @@ class OCDashboardApp(App[None]):
             lines.append(text)
         body.update("\n".join(lines))
 
+    # ── Helpers ────────────────────────────────────────────────────────
+
+    def _open_selected_session(self) -> None:
+        if not self._sessions:
+            return
+        if self._selected_index >= len(self._sessions):
+            return
+        session = self._sessions[self._selected_index]
+        if session.is_group_header:
+            return
+        project_path = session.directory or (
+            self._snapshot.project_path if self._snapshot else None
+        )
+        _launch_session_in_tmux(session.id, project_path)
+
+    def _open_selected_pr(self) -> None:
+        if not self._snapshot:
+            return
+        pr_table = self.query_one("#pr-table", DataTable)
+        row_idx = pr_table.cursor_row
+        if row_idx is None or row_idx < 0:
+            return
+        prs = self._snapshot.prs[:10]
+        if row_idx >= len(prs):
+            return
+        pr = prs[row_idx]
+        if pr.url:
+            webbrowser.open(pr.url)
+
     def _init_branch(self) -> None:
         """Get current git branch from the project path."""
         if self._current_branch:
-            return  # already set from log backfill
+            return
         try:
             from .data import discover_project_path
 
