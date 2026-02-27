@@ -79,9 +79,13 @@ KanbanList:focus > .option-list--option-highlighted {
     color: #7a8490;
 }
 
-#kanban-input-bar {
+#bottom-bar {
     dock: bottom;
-    height: 3;
+    height: auto;
+}
+
+#kanban-input-bar {
+    height: auto;
     padding: 0 1;
     background: #001a00;
     display: none;
@@ -94,11 +98,10 @@ KanbanList:focus > .option-list--option-highlighted {
 #kanban-input-bar Input {
     background: #000000;
     color: #00ff41;
-    border: heavy #0a3d1a;
 }
 
 #kanban-input-bar Input:focus {
-    border: heavy #00ff41;
+    color: #39ff61;
 }
 
 #kanban-input-label {
@@ -107,7 +110,6 @@ KanbanList:focus > .option-list--option-highlighted {
 }
 
 #footerbar {
-    dock: bottom;
     height: 1;
     padding: 0 1;
     background: #010409;

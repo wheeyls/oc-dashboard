@@ -331,10 +331,11 @@ class OCDashboardApp(App[None]):
             with Container(id="detail-panel"):
                 yield Static(" %s PROJECT" % _EYE, classes="panel-title")
                 yield Static("", id="detail-body")
-        with Container(id="kanban-input-bar"):
-            yield Static("", id="kanban-input-label")
-            yield Input(id="kanban-input", placeholder="")
-        yield Static("", id="footerbar")
+        with Container(id="bottom-bar"):
+            with Container(id="kanban-input-bar"):
+                yield Static("", id="kanban-input-label")
+                yield Input(id="kanban-input", placeholder="")
+            yield Static("", id="footerbar")
 
     def on_mount(self) -> None:
         self._wal_mtime = get_wal_mtime()
