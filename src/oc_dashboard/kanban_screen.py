@@ -64,7 +64,6 @@ _CHECK_CIRCLE = chr(0xF058)
 STAGE_ICONS = {
     "pending": _SQ_O,
     "in_progress": _SPIN,
-    "pr": _FORK,
     "done": _CHECK_CIRCLE,
 }
 

@@ -72,7 +72,6 @@ STATUS_ICONS = {
 STAGE_ICONS = {
     "pending": _SQ_O,
     "in_progress": _SPIN,
-    "pr": _FORK,
     "done": _CHECK_CIRCLE,
 }
 
@@ -448,7 +447,10 @@ class OCDashboardApp(App[None]):
 
     def _apply_compact_mode(self, width, height):
         # type: (int, int) -> None
-        panel = self.query_one("#detail-panel", Container)
+        try:
+            panel = self.query_one("#detail-panel", Container)
+        except Exception:
+            return
         if height < 20 or width < 60:
             panel.add_class("hidden")
         else:

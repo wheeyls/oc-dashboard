@@ -5,7 +5,7 @@ shipped today is ``LocalJsonKanban`` which stores everything in a single JSON
 file.  The interface is deliberately small so that a JIRA-MCP or Trello-MCP
 adapter can be dropped in later without touching the rest of the dashboard.
 
-Stages (ordered): pending -> in_progress -> pr -> done
+Stages (ordered): pending -> in_progress -> done
 """
 
 import json
@@ -18,12 +18,11 @@ from typing import Any, Dict, List, Optional
 
 # ── Kanban stages (in board order) ────────────────────────
 
-STAGES = ["pending", "in_progress", "pr", "done"]
+STAGES = ["pending", "in_progress", "done"]
 
 STAGE_LABELS = {
     "pending": "Pending",
     "in_progress": "In Progress",
-    "pr": "In PR",
     "done": "Done",
 }
 
