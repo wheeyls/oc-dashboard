@@ -368,7 +368,6 @@ class OCDashboardApp(App[None]):
         Binding("u", "unlink_session", "Unlink sess"),
         Binding("p", "link_pr", "Link PR"),
         Binding("d", "delete_project", "Delete"),
-        Binding("enter", "open_session", "Open"),
     ]
 
     def __init__(self) -> None:
@@ -784,6 +783,10 @@ class OCDashboardApp(App[None]):
     def on_option_list_option_highlighted(self, event):
         # type: (OptionList.OptionHighlighted) -> None
         self._render_detail()
+
+    def on_option_list_option_selected(self, event):
+        # type: (OptionList.OptionSelected) -> None
+        self.action_open_session()
 
     # ── Data ───────────────────────────────────────────────────────────
 
