@@ -32,7 +32,7 @@ Screen {
 
 #top-row {
     layout: horizontal;
-    height: 7fr;
+    height: 8fr;
 }
 
 #kanban-area {
@@ -82,7 +82,7 @@ Screen {
 
 #bottom-row {
     layout: horizontal;
-    height: 3fr;
+    height: 2fr;
 }
 
 .panel {
