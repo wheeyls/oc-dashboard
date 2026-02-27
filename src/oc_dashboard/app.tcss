@@ -170,3 +170,41 @@ DataTable > .datatable--even-row {
 DataTable > .datatable--odd-row {
     background: #000000;
 }
+
+/* ── Session picker screen ───────────────────────────── */
+
+SessionPickerScreen {
+    background: #000000;
+    color: #a8b1ba;
+}
+
+#picker-topbar {
+    dock: top;
+    height: 1;
+    padding: 0 2;
+    background: #010409;
+    color: #00ff41;
+    text-style: bold;
+}
+
+#picker-list {
+    height: 1fr;
+    padding: 0 1;
+    background: #000000;
+    color: #a8b1ba;
+    scrollbar-size: 0 0;
+}
+
+#picker-list > .option-list--option-highlighted {
+    background: #004d00;
+    color: #00ff41;
+    text-style: bold;
+}
+
+#picker-footer {
+    dock: bottom;
+    height: 1;
+    padding: 0 1;
+    background: #010409;
+    color: #3d444d;
+}

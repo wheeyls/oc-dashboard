@@ -84,6 +84,7 @@ MODE_NORMAL = "normal"
 MODE_ADD_TITLE = "add_title"
 MODE_ADD_DESC = "add_desc"
 MODE_LINK_SESSION = "link_session"
+MODE_UNLINK_SESSION = "unlink_session"
 MODE_LINK_PR = "link_pr"
 
 
@@ -140,8 +141,9 @@ class KanbanList(OptionList):
         self.call_later(self._update_detail)
 
     def _update_detail(self) -> None:
-        if hasattr(self.app, '_render_detail'):
-            self.app._render_detail()
+        render_detail = getattr(self.app, "_render_detail", None)
+        if callable(render_detail):
+            render_detail()
 
 
 # ══════════════════════════════════════════════════════════
@@ -279,6 +281,75 @@ class SessionsScreen(Screen):
         self.action_open_session()
 
 
+
+# ══════════════════════════════════════════════════════════
+#  Session Picker Screen (for opening linked sessions)
+# ══════════════════════════════════════════════════════════
+
+
+class SessionPickerScreen(Screen):
+    """Pick a session from a project's linked sessions to open in tmux."""
+
+    BINDINGS = [
+        Binding("escape", "pop_screen", "Back"),
+        Binding("q", "pop_screen", "Back", show=False),
+        Binding("enter", "pick_session", "Open"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+    ]
+
+    def __init__(self, session_ids, sessions, project_path=None):
+        # type: (List[str], list, Optional[str]) -> None
+        super().__init__()
+        self._session_ids = session_ids
+        self._sessions = sessions
+        self._project_path = project_path
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="picker-topbar")
+        yield OptionList(id="picker-list")
+        yield Static("", id="picker-footer")
+
+    def on_mount(self) -> None:
+        self.query_one("#picker-topbar", Static).update(
+            " %s PICK SESSION" % _TERM
+        )
+        self.query_one("#picker-footer", Static).update(
+            " esc:back %s j/k:nav %s enter:open" % (_PIPE, _PIPE)
+        )
+        ol = self.query_one("#picker-list", OptionList)
+        for sid in self._session_ids:
+            title = sid[:16]
+            for s in self._sessions:
+                if s.id == sid:
+                    title = s.title[:40]
+                    break
+            ol.add_option(Option("%s  [dim]%s[/]" % (title, sid[:16]), id=sid))
+        if ol.option_count > 0:
+            ol.highlighted = 0
+        ol.focus()
+
+    def action_pop_screen(self) -> None:
+        self.app.pop_screen()
+
+    def action_cursor_down(self) -> None:
+        self.query_one("#picker-list", OptionList).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#picker-list", OptionList).action_cursor_up()
+
+    def action_pick_session(self) -> None:
+        ol = self.query_one("#picker-list", OptionList)
+        idx = ol.highlighted
+        if idx is None or idx < 0 or idx >= len(self._session_ids):
+            return
+        session_id = self._session_ids[idx]
+        _launch_session_in_tmux(session_id, self._project_path)
+        self.app.pop_screen()
+
+    def on_option_list_option_selected(self, event):
+        # type: (OptionList.OptionSelected) -> None
+        self.action_pick_session()
 # ══════════════════════════════════════════════════════════
 #  Main App — Kanban board fills the screen
 # ══════════════════════════════════════════════════════════
@@ -294,8 +365,10 @@ class OCDashboardApp(App[None]):
         Binding("M", "move_left", "Move \u2190", show=False),
         Binding("a", "add_project", "Add"),
         Binding("s", "link_session", "Link sess"),
+        Binding("u", "unlink_session", "Unlink sess"),
         Binding("p", "link_pr", "Link PR"),
         Binding("d", "delete_project", "Delete"),
+        Binding("enter", "open_session", "Open"),
     ]
 
     def __init__(self) -> None:
@@ -511,6 +584,23 @@ class OCDashboardApp(App[None]):
             return
         self.push_screen(SessionsScreen(self))
 
+    def action_open_session(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._selected_project()
+        if not project or not project.session_ids:
+            return
+        project_path = None
+        if self._snapshot:
+            project_path = self._snapshot.project_path
+        if len(project.session_ids) == 1:
+            _launch_session_in_tmux(project.session_ids[0], project_path)
+        else:
+            self.push_screen(
+                SessionPickerScreen(
+                    project.session_ids, self._sessions, project_path
+                )
+            )
     def action_move_right(self) -> None:
         if self._mode != MODE_NORMAL:
             return
@@ -548,6 +638,19 @@ class OCDashboardApp(App[None]):
         self._mode = MODE_LINK_SESSION
         self._show_input("Session ID or search term:", "ses_... or partial title")
 
+    def action_unlink_session(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._selected_project()
+        if not project or not project.session_ids:
+            return
+        self._mode = MODE_UNLINK_SESSION
+        self._show_input(
+            "Unlink session ID:",
+            "ses_...",
+            initial_value=project.session_ids[0],
+        )
+
     def action_link_pr(self) -> None:
         if self._mode != MODE_NORMAL:
             return
@@ -568,18 +671,19 @@ class OCDashboardApp(App[None]):
 
     # ── Input bar ──────────────────────────────────────────────────────
 
-    def _show_input(self, label, placeholder=""):
-        # type: (str, str) -> None
+    def _show_input(self, label, placeholder="", initial_value=""):
+        # type: (str, str, str) -> None
         # Remember which column had focus
         focused = self.focused
         if isinstance(focused, KanbanList):
-            self._last_focused_stage = focused.id.replace("list-", "")
+            if focused.id:
+                self._last_focused_stage = focused.id.replace("list-", "")
         bar = self.query_one("#kanban-input-bar", Container)
         bar.add_class("visible")
         lbl = self.query_one("#kanban-input-label", Static)
         lbl.update(" %s" % label)
         inp = self.query_one("#kanban-input", Input)
-        inp.value = ""
+        inp.value = initial_value
         inp.placeholder = placeholder
         inp.focus()
 
@@ -639,6 +743,20 @@ class OCDashboardApp(App[None]):
             self._refresh_kanban()
             return
 
+        if self._mode == MODE_UNLINK_SESSION:
+            if value:
+                project = self._selected_project()
+                if project:
+                    matched = None
+                    for sid in project.session_ids:
+                        if sid == value or value in sid:
+                            matched = sid
+                            break
+                    self._kanban.unlink_session(project.id, matched or value)
+            self._hide_input()
+            self._refresh_kanban()
+            return
+
         if self._mode == MODE_LINK_PR:
             if value:
                 project = self._selected_project()
@@ -666,7 +784,6 @@ class OCDashboardApp(App[None]):
     def on_option_list_option_highlighted(self, event):
         # type: (OptionList.OptionHighlighted) -> None
         self._render_detail()
-
 
     # ── Data ───────────────────────────────────────────────────────────
 
@@ -734,7 +851,7 @@ class OCDashboardApp(App[None]):
         # type: () -> Optional[KanbanProject]
         focused = self.focused
         if isinstance(focused, KanbanList):
-            stage = focused.id.replace("list-", "")
+            stage = focused.id.replace("list-", "") if focused.id else "pending"
         elif self._last_focused_stage:
             stage = self._last_focused_stage
         else:
@@ -835,8 +952,8 @@ class OCDashboardApp(App[None]):
     def _render_footerbar(self) -> None:
         self.query_one("#footerbar", Static).update(
             " q:quit %s r:refresh %s S:sessions %s tab:columns %s j/k:select"
-            " %s m/M:move %s a:add %s enter:open"
-            % (_PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE)
+            " %s enter:open %s m/M:move %s a:add %s s:link %s u:unlink"
+            % (_PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE)
         )
 
     def _render_detail(self) -> None:
