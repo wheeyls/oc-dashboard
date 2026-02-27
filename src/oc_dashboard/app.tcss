@@ -1,5 +1,7 @@
 Screen {
     layout: vertical;
+    padding: 0;
+    margin: 0;
     background: #000000;
     color: #a8b1ba;
     overflow: hidden;
@@ -187,7 +189,7 @@ Screen.narrow .panel {
 }
 
 Screen.narrow #topbar {
-    padding: 1 1;
+    padding: 0 1;
 }
 
 /* ── Responsive: compact (< 100 cols) ────────────────── */
