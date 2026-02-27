@@ -268,10 +268,12 @@ class OCDashboardApp(App[None]):
             "", "Title", "Todos", "Bots", "Mem", "Cost", "Age"
         )
         sessions_table.cursor_type = "row"
+        sessions_table.can_focus = False
 
         pr_table = self.query_one("#pr-table", DataTable)
         _ = pr_table.add_columns("PR", "CI", "Title", "Review")
         pr_table.cursor_type = "row"
+        pr_table.can_focus = False
 
         # Initialize WAL mtime for change detection
         self._wal_mtime = get_wal_mtime()
@@ -570,6 +572,7 @@ class OCDashboardApp(App[None]):
         bar = self.query_one("#kanban-input-bar", Container)
         bar.remove_class("visible")
         self._mode = MODE_NORMAL
+        self.set_focus(None)
 
     def on_input_submitted(self, event) -> None:
         # type: (Input.Submitted) -> None
