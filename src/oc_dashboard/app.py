@@ -23,6 +23,7 @@ from .data import session_status
 from .data import CI_PASS, CI_FAIL, CI_PENDING
 from .data import LogEvent, get_wal_mtime, find_latest_log, parse_log_line
 from .data import fetch_running_processes
+from .kanban import LocalJsonKanban
 
 
 # ── Nerd Font icons ─────────────────────────────────────
@@ -164,6 +165,7 @@ class OCDashboardApp(App[None]):
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
+        Binding("b", "kanban", "Board"),
         Binding("o", "open_pr", "Open PR"),
         Binding("enter", "open_session", "Open Session"),
         Binding("j", "cursor_down", "Down", show=False),
@@ -417,6 +419,16 @@ class OCDashboardApp(App[None]):
     def action_refresh(self) -> None:
         _ = self.refresh_dashboard()
 
+    def action_kanban(self) -> None:
+        from .kanban_screen import KanbanScreen
+        self.push_screen(
+            KanbanScreen(
+                sessions=self._sessions,
+                prs=self._snapshot.prs if self._snapshot else [],
+                project_path=self._snapshot.project_path if self._snapshot else None,
+            )
+        )
+
     def action_open_pr(self) -> None:
         self._open_selected_pr()
 
@@ -595,8 +607,8 @@ class OCDashboardApp(App[None]):
 
     def _render_footerbar(self) -> None:
         self.query_one("#footerbar", Static).update(
-            " q:quit %s r:refresh %s o:pr %s enter:session %s j/k:nav"
-            % (_PIPE, _PIPE, _PIPE, _PIPE)
+            " q:quit %s r:refresh %s b:board %s o:pr %s enter:session %s j/k:nav"
+            % (_PIPE, _PIPE, _PIPE, _PIPE, _PIPE)
         )
 
     # ── Sessions table ──────────────────────────────────
