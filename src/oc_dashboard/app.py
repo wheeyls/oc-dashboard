@@ -5,6 +5,8 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from rich.text import Text
+
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -902,16 +904,7 @@ class OCDashboardApp(App[None]):
         old_idx = ol.highlighted
         ol.clear_options()
         for project in items:
-            title = project.title
-            if len(title) > 28:
-                title = title[:25] + "..."
-            meta_parts = []
-            if project.session_ids:
-                meta_parts.append("%d sess" % len(project.session_ids))
-            if project.pr_numbers:
-                meta_parts.append("%d PR" % len(project.pr_numbers))
-            meta = " (%s)" % ", ".join(meta_parts) if meta_parts else ""
-            ol.add_option(Option("%s%s" % (title, meta), id=project.id))
+            ol.add_option(Option(self._build_card(project), id=project.id))
 
         # Restore highlight position
         if ol.option_count > 0:
@@ -919,6 +912,36 @@ class OCDashboardApp(App[None]):
                 ol.highlighted = old_idx
             else:
                 ol.highlighted = max(0, ol.option_count - 1)
+
+    def _build_card(self, project):
+        # type: (KanbanProject) -> Text
+        card = Text()
+        # Title line
+        title = project.title
+        if len(title) > 30:
+            title = title[:27] + "..."
+        card.append(title, style="bold")
+        # Description line
+        if project.description:
+            desc = project.description
+            if len(desc) > 34:
+                desc = desc[:31] + "..."
+            card.append("\n")
+            card.append(desc, style="dim")
+        # Meta line — sessions, PRs, tags
+        meta_parts = []  # type: list
+        if project.session_ids:
+            meta_parts.append("%s %d" % (_TERM, len(project.session_ids)))
+        if project.pr_numbers:
+            pr_labels = ["#%d" % n for n in project.pr_numbers[:3]]
+            meta_parts.append("%s %s" % (_FORK, " ".join(pr_labels)))
+        if project.tags:
+            tag_labels = project.tags[:3]
+            meta_parts.append("%s %s" % (_TAG, " ".join(tag_labels)))
+        if meta_parts:
+            card.append("\n")
+            card.append("  ".join(meta_parts), style="dim italic")
+        return card
 
     def _render_topbar(self) -> None:
         spinner = _HG[self._tick_count % len(_HG)]

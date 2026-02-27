@@ -50,6 +50,10 @@ KanbanList {
     scrollbar-size: 0 0;
 }
 
+KanbanList > .option-list--option {
+    padding: 0 1;
+}
+
 KanbanList > .option-list--option-highlighted {
     background: #003b00;
     color: #39ff61;
