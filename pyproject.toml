@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 oc-dashboard = "oc_dashboard.app:main"
+oc-kanban = "oc_dashboard.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
