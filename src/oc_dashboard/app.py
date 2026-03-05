@@ -94,9 +94,9 @@ def _in_tmux():
     return bool(os.environ.get("TMUX"))
 
 
-def _launch_session_in_tmux(session_id, project_path=None):
-    # type: (str, ...) -> None
-    oc_cmd = "opencode -s %s" % session_id
+def _launch_session_in_tmux(session_id=None, project_path=None):
+    # type: (Optional[str], ...) -> None
+    oc_cmd = "opencode -s %s" % session_id if session_id else "opencode"
     if project_path:
         oc_cmd = "cd %s && %s" % (project_path, oc_cmd)
     if _in_tmux():
@@ -282,7 +282,6 @@ class SessionsScreen(Screen):
         self.action_open_session()
 
 
-
 # ══════════════════════════════════════════════════════════
 #  Session Picker Screen (for opening linked sessions)
 # ══════════════════════════════════════════════════════════
@@ -312,9 +311,7 @@ class SessionPickerScreen(Screen):
         yield Static("", id="picker-footer")
 
     def on_mount(self) -> None:
-        self.query_one("#picker-topbar", Static).update(
-            " %s PICK SESSION" % _TERM
-        )
+        self.query_one("#picker-topbar", Static).update(" %s PICK SESSION" % _TERM)
         self.query_one("#picker-footer", Static).update(
             " esc:back %s j/k:nav %s enter:open" % (_PIPE, _PIPE)
         )
@@ -351,6 +348,8 @@ class SessionPickerScreen(Screen):
     def on_option_list_option_selected(self, event):
         # type: (OptionList.OptionSelected) -> None
         self.action_pick_session()
+
+
 # ══════════════════════════════════════════════════════════
 #  Main App — Kanban board fills the screen
 # ══════════════════════════════════════════════════════════
@@ -398,6 +397,10 @@ class OCDashboardApp(App[None]):
         self._mode = MODE_NORMAL
         self._pending_title = ""
         self._last_focused_stage = "pending"
+        # Auto-link: track pending new-session linkage
+        self._pending_link_project_id = None  # type: Optional[str]
+        self._pending_link_existing_ids = set()  # type: set
+        self._pending_link_until = None  # type: Optional[datetime]
 
     def compose(self) -> ComposeResult:
         yield Static("", id="topbar")
@@ -603,19 +606,24 @@ class OCDashboardApp(App[None]):
         if self._mode != MODE_NORMAL:
             return
         project = self._selected_project()
-        if not project or not project.session_ids:
+        if not project:
             return
         project_path = None
         if self._snapshot:
             project_path = self._snapshot.project_path
-        if len(project.session_ids) == 1:
+        if not project.session_ids:
+            self._pending_link_project_id = project.id
+            self._pending_link_existing_ids = set(s.id for s in self._sessions)
+            self._pending_link_until = datetime.now() + timedelta(seconds=15)
+            _launch_session_in_tmux(None, project_path)
+            self.set_timer(2.0, self.refresh_dashboard)
+        elif len(project.session_ids) == 1:
             _launch_session_in_tmux(project.session_ids[0], project_path)
         else:
             self.push_screen(
-                SessionPickerScreen(
-                    project.session_ids, self._sessions, project_path
-                )
+                SessionPickerScreen(project.session_ids, self._sessions, project_path)
             )
+
     def action_move_right(self) -> None:
         if self._mode != MODE_NORMAL:
             return
@@ -849,8 +857,29 @@ class OCDashboardApp(App[None]):
                 )
             )
         self._prev_ci_fail_count = ci_fails
+        self._try_auto_link_session(snapshot)
         self._render_topbar()
         self._render_detail()
+
+    def _try_auto_link_session(self, snapshot):
+        # type: (DashboardSnapshot) -> None
+        if not self._pending_link_project_id:
+            return
+        if self._pending_link_until and datetime.now() > self._pending_link_until:
+            self._pending_link_project_id = None
+            self._pending_link_existing_ids = set()
+            self._pending_link_until = None
+            return
+        current_ids = set(s.id for s in snapshot.sessions)
+        new_ids = current_ids - self._pending_link_existing_ids
+        if not new_ids:
+            return
+        new_id = sorted(new_ids)[-1]
+        self._kanban.link_session(self._pending_link_project_id, new_id)
+        self._pending_link_project_id = None
+        self._pending_link_existing_ids = set()
+        self._pending_link_until = None
+        self._refresh_kanban()
 
     # ── Kanban data ────────────────────────────────────────────────────
 
