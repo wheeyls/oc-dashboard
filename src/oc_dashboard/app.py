@@ -454,6 +454,8 @@ class SearchScreen(Screen):
             return
         self._results = self._app_ref._dashboard.search(query)
         self._render_results()
+        if self._results:
+            self.query_one("#search-results", OptionList).focus()
 
     def _render_results(self):
         # type: () -> None
