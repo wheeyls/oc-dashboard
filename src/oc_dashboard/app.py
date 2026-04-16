@@ -1,6 +1,5 @@
 import os
 import signal
-import subprocess
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -15,21 +14,26 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from .data import BackgroundWorker
-from .data import DashboardSnapshot
-from .data import SessionSummary
-from .data import build_snapshot
-from .data import relative_time
-from .data import session_status
-from .data import CI_FAIL
-from .data import LogEvent, get_wal_mtime, find_latest_log, parse_log_line
-from .data import fetch_running_processes
+from .core import Dashboard, SearchResult, _launch_session_interactive
+from .data import (
+    CI_FAIL,
+    DashboardSnapshot,
+    LogEvent,
+    SessionSummary,
+    fetch_running_processes,
+    find_latest_log,
+    get_wal_mtime,
+    parse_log_line,
+    relative_time,
+    session_status,
+)
 from .kanban import (
     STAGES,
     STAGE_LABELS,
     KanbanProject,
     LocalJsonKanban,
 )
+from .opencode import HttpOpenCodeClient, ensure_server
 
 
 # ── Nerd Font icons ─────────────────────────────────────
@@ -87,39 +91,6 @@ MODE_ADD_DESC = "add_desc"
 MODE_LINK_SESSION = "link_session"
 MODE_UNLINK_SESSION = "unlink_session"
 MODE_LINK_PR = "link_pr"
-
-
-def _in_tmux():
-    # type: () -> bool
-    return bool(os.environ.get("TMUX"))
-
-
-def _launch_session_in_tmux(session_id=None, project_path=None):
-    # type: (Optional[str], ...) -> None
-    oc_cmd = "opencode -s %s" % session_id if session_id else "opencode"
-    if project_path:
-        oc_cmd = "cd %s && %s" % (project_path, oc_cmd)
-    if _in_tmux():
-        try:
-            subprocess.Popen(
-                ["tmux", "split-window", "-h", "-l", "50%", oc_cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
-    else:
-        apple_script = 'tell application "Terminal" to do script "%s"' % oc_cmd.replace(
-            '"', '\\"'
-        )
-        try:
-            subprocess.Popen(
-                ["osascript", "-e", apple_script],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception:
-            pass
 
 
 # ══════════════════════════════════════════════════════════
@@ -264,22 +235,31 @@ class SessionsScreen(Screen):
         self.query_one("#sessions-body", DataTable).action_cursor_up()
 
     def action_open_session(self) -> None:
-        a = self._app_ref
         table = self.query_one("#sessions-body", DataTable)
-        idx = table.cursor_row
-        if idx is None or idx < 0 or idx >= len(a._sessions):
+        try:
+            cell_key = table.coordinate_to_cell_key(table.cursor_coordinate)
+        except Exception:
             return
-        session = a._sessions[idx]
-        if session.is_group_header:
+        self._open_by_key(str(cell_key.row_key.value))
+
+    def on_data_table_row_selected(self, event_obj):
+        # type: (DataTable.RowSelected) -> None
+        self._open_by_key(str(event_obj.row_key.value))
+
+    def _open_by_key(self, session_id):
+        # type: (str) -> None
+        a = self._app_ref
+        session = None
+        for s in a._sessions:
+            if s.id == session_id:
+                session = s
+                break
+        if not session or session.is_group_header:
             return
         project_path = session.directory or (
             a._snapshot.project_path if a._snapshot else None
         )
-        _launch_session_in_tmux(session.id, project_path)
-
-    def on_data_table_row_selected(self, event_obj):
-        # type: (DataTable.RowSelected) -> None
-        self.action_open_session()
+        _launch_session_interactive(session.id, project_path)
 
 
 # ══════════════════════════════════════════════════════════
@@ -342,12 +322,203 @@ class SessionPickerScreen(Screen):
         if idx is None or idx < 0 or idx >= len(self._session_ids):
             return
         session_id = self._session_ids[idx]
-        _launch_session_in_tmux(session_id, self._project_path)
+        _launch_session_interactive(session_id, self._project_path)
         self.app.pop_screen()
 
     def on_option_list_option_selected(self, event):
         # type: (OptionList.OptionSelected) -> None
+        event.stop()
         self.action_pick_session()
+
+
+# ══════════════════════════════════════════════════════════
+#  Archive Screen (pushed via Shift+A)
+# ══════════════════════════════════════════════════════════
+
+
+class ArchiveScreen(Screen):
+    BINDINGS = [
+        Binding("escape", "pop_screen", "Back"),
+        Binding("A", "pop_screen", "Back", show=False),
+        Binding("q", "pop_screen", "Back", show=False),
+        Binding("enter", "restore_project", "Restore"),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+    ]
+
+    def __init__(self, app_ref):
+        # type: (OCDashboardApp) -> None
+        super().__init__()
+        self._app_ref = app_ref
+        self._archived = []  # type: List[KanbanProject]
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="archive-topbar")
+        yield OptionList(id="archive-list")
+        yield Static("", id="archive-footer")
+
+    def on_mount(self) -> None:
+        self._archived = self._app_ref._dashboard.list_archived()
+        self.query_one("#archive-topbar", Static).update(
+            " %s ARCHIVE  [dim]%d project(s)[/]" % (_LIST, len(self._archived))
+        )
+        self.query_one("#archive-footer", Static).update(
+            " esc/A:back %s j/k:nav %s enter:restore" % (_PIPE, _PIPE)
+        )
+        ol = self.query_one("#archive-list", OptionList)
+        for project in self._archived:
+            label = Text()
+            title = project.title
+            if len(title) > 40:
+                title = title[:37] + "..."
+            label.append(title, style="bold")
+            if project.description:
+                desc = project.description
+                if len(desc) > 50:
+                    desc = desc[:47] + "..."
+                label.append("\n")
+                label.append(desc, style="dim")
+            restore_to = project.previous_stage or "done"
+            restore_label = STAGE_LABELS.get(restore_to, restore_to)
+            label.append("\n")
+            label.append(
+                "archived %s  \u2192 %s" % (project.updated_at[:10], restore_label),
+                style="dim italic",
+            )
+            ol.add_option(Option(label, id=project.id))
+        if ol.option_count > 0:
+            ol.highlighted = 0
+        elif ol.option_count == 0:
+            ol.add_option(Option(Text("(empty)", style="dim")))
+        ol.focus()
+
+    def action_pop_screen(self) -> None:
+        self.app.pop_screen()
+
+    def action_cursor_down(self) -> None:
+        self.query_one("#archive-list", OptionList).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#archive-list", OptionList).action_cursor_up()
+
+    def action_restore_project(self) -> None:
+        ol = self.query_one("#archive-list", OptionList)
+        idx = ol.highlighted
+        if idx is None or idx < 0 or idx >= len(self._archived):
+            return
+        project = self._archived[idx]
+        self._app_ref._dashboard.restore_project(project.id)
+        self._app_ref._refresh_kanban()
+        self.app.pop_screen()
+
+    def on_option_list_option_selected(self, event):
+        # type: (OptionList.OptionSelected) -> None
+        event.stop()
+        self.action_restore_project()
+
+
+# ══════════════════════════════════════════════════════════
+#  Search Screen (pushed via /)
+# ══════════════════════════════════════════════════════════
+
+
+class SearchScreen(Screen):
+    BINDINGS = [
+        Binding("escape", "pop_screen", "Back"),
+        Binding("q", "pop_screen", "Back", show=False),
+    ]
+
+    def __init__(self, app_ref):
+        # type: (OCDashboardApp) -> None
+        super().__init__()
+        self._app_ref = app_ref
+        self._results = []  # type: List[SearchResult]
+
+    def compose(self) -> ComposeResult:
+        yield Static("", id="search-topbar")
+        yield Input(id="search-input", placeholder="Search projects, sessions, PRs...")
+        yield OptionList(id="search-results")
+        yield Static("", id="search-footer")
+
+    def on_mount(self) -> None:
+        self.query_one("#search-topbar", Static).update(" %s SEARCH" % _SEARCH)
+        self.query_one("#search-footer", Static).update(
+            " esc:back %s enter:search %s j/k:nav %s enter:open" % (_PIPE, _PIPE, _PIPE)
+        )
+        self.query_one("#search-input", Input).focus()
+
+    def on_input_submitted(self, event):
+        # type: (Input.Submitted) -> None
+        query = event.value.strip()
+        if not query:
+            return
+        self._results = self._app_ref._dashboard.search(query)
+        self._render_results()
+
+    def _render_results(self):
+        # type: () -> None
+        ol = self.query_one("#search-results", OptionList)
+        ol.clear_options()
+        if not self._results:
+            ol.add_option(Option(Text("(no results)", style="dim")))
+            return
+        for result in self._results:
+            label = Text()
+            if result.kind == "project":
+                icon = STAGE_ICONS.get(result.stage, _O)
+                stage_text = STAGE_LABELS.get(result.stage, result.stage)
+                label.append("%s " % icon, style="bold")
+                title = result.title
+                if len(title) > 50:
+                    title = title[:47] + "..."
+                label.append(title, style="bold")
+                label.append("  ")
+                label.append(stage_text, style="dim italic")
+                if result.pr_numbers:
+                    prs = ", ".join("#%d" % pr for pr in result.pr_numbers)
+                    label.append("  %s" % prs, style="dim")
+                if result.detail and result.detail != stage_text:
+                    label.append("\n")
+                    detail = result.detail
+                    if len(detail) > 60:
+                        detail = detail[:57] + "..."
+                    label.append("  %s" % detail, style="dim")
+            else:
+                label.append("%s " % _TERM, style="bold")
+                title = result.title
+                if len(title) > 50:
+                    title = title[:47] + "..."
+                label.append(title, style="bold")
+                label.append("\n")
+                label.append("  %s" % result.id[:24], style="dim")
+            ol.add_option(Option(label, id=result.id))
+        if ol.option_count > 0:
+            ol.highlighted = 0
+
+    def on_option_list_option_selected(self, event):
+        # type: (OptionList.OptionSelected) -> None
+        event.stop()
+        self._open_selected()
+
+    def _open_selected(self):
+        # type: () -> None
+        ol = self.query_one("#search-results", OptionList)
+        idx = ol.highlighted
+        if idx is None or idx < 0 or idx >= len(self._results):
+            return
+        result = self._results[idx]
+        if result.kind == "session":
+            project_path = None
+            snap = self._app_ref._snapshot
+            if snap:
+                project_path = snap.project_path
+            _launch_session_interactive(result.id, project_path)
+        elif result.kind == "project":
+            self._app_ref._focus_project_after_search = result.id
+            self.app.pop_screen()
+
+    def action_pop_screen(self) -> None:
+        self.app.pop_screen()
 
 
 # ══════════════════════════════════════════════════════════
@@ -357,6 +528,7 @@ class SessionPickerScreen(Screen):
 
 class OCDashboardApp(App[None]):
     CSS_PATH = "app.tcss"
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (80, "-wide")]
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
@@ -367,44 +539,91 @@ class OCDashboardApp(App[None]):
         Binding("s", "link_session", "Link sess"),
         Binding("u", "unlink_session", "Unlink sess"),
         Binding("p", "link_pr", "Link PR"),
-        Binding("d", "delete_project", "Delete"),
+        Binding("d", "archive_project", "Archive"),
+        Binding("A", "show_archive", "Archive \u2630"),
+        Binding("/", "show_search", "Search"),
+        Binding("n", "wheel_next", "Next \u27f3"),
+        Binding("N", "wheel_prev", "Prev \u27f3", show=False),
+        Binding("w", "wheel_add", "Wheel+"),
+        Binding("W", "wheel_remove", "Wheel-", show=False),
     ]
 
     def __init__(self) -> None:
         super().__init__()
-        self._snapshot = None  # type: Optional[DashboardSnapshot]
-        self._sessions = []  # type: list
-        self._todos_by_session = {}  # type: dict
-        self._workers_by_session = {}  # type: dict
-        self._running_cpu = {}  # type: dict
-        self._cost_by_session = {}  # type: dict
-        self._mem_by_session = {}  # type: dict
-        self._unattributed_cpu = 0.0
+        # ── Core domain (all state lives here) ─────────────
+        server_url = ensure_server()
+        oc_client = HttpOpenCodeClient(server_url or "http://127.0.0.1:4096")
+        kanban = LocalJsonKanban()
+        self._dashboard = Dashboard(kanban, oc_client)
+        # ── UI-only state ──────────────────────────────────
         self._tick_count = 0
-        self._total_cost = 0.0
-        # Live features
         self._wal_mtime = None  # type: Optional[float]
         self._log_path = None  # type: Optional[str]
         self._log_handle = None  # type: Optional[Any]
-        self._log_events = deque(maxlen=COMMS_MAX_EVENTS)  # type: deque
-        self._current_branch = ""
+        self._log_events = deque(maxlen=COMMS_MAX_EVENTS)  # type: deque[LogEvent]
         self._error_flash_until = None  # type: Optional[datetime]
-        self._watchdog_warned = set()  # type: set
-        self._prev_ci_fail_count = 0
-        # Kanban
-        self._kanban = LocalJsonKanban()
-        self._projects_by_stage = {}  # type: Dict[str, List[KanbanProject]]
+        self._watchdog_warned = set()  # type: set[int]
         self._mode = MODE_NORMAL
         self._pending_title = ""
         self._last_focused_stage = "pending"
-        # Auto-link: track pending new-session linkage
-        self._pending_link_project_id = None  # type: Optional[str]
-        self._pending_link_existing_ids = set()  # type: set
-        self._pending_link_until = None  # type: Optional[datetime]
+        self._focus_project_after_search = None  # type: Optional[str]
+
+    # ── State accessors (delegate to Dashboard) ────────────
+
+    @property
+    def _sessions(self):
+        # type: () -> List[SessionSummary]
+        return self._dashboard.state.sessions
+
+    @property
+    def _snapshot(self):
+        # type: () -> Optional[DashboardSnapshot]
+        return self._dashboard.state.snapshot
+
+    @property
+    def _running_cpu(self):
+        # type: () -> Dict[str, float]
+        return self._dashboard.state.running_cpu
+
+    @property
+    def _workers_by_session(self):
+        # type: () -> Dict[str, Any]
+        return self._dashboard.state.workers_by_session
+
+    @property
+    def _mem_by_session(self):
+        # type: () -> Dict[str, int]
+        return self._dashboard.state.mem_by_session
+
+    @property
+    def _cost_by_session(self):
+        # type: () -> Dict[str, float]
+        return self._dashboard.state.cost_by_session
+
+    @property
+    def _total_cost(self):
+        # type: () -> float
+        return self._dashboard.state.total_cost
+
+    @property
+    def _current_branch(self):
+        # type: () -> str
+        return self._dashboard.state.current_branch
+
+    @_current_branch.setter
+    def _current_branch(self, value):
+        # type: (str) -> None
+        self._dashboard.state.current_branch = value
+
+    @property
+    def _projects_by_stage(self):
+        # type: () -> Dict[str, List[KanbanProject]]
+        return self._dashboard.state.projects_by_stage
 
     def compose(self) -> ComposeResult:
         yield Static("", id="topbar")
         with Container(id="kanban-row"):
+            yield Static("", id="wheel-pane")
             with Container(id="kanban-area"):
                 for stage in STAGES:
                     with Container(id="col-%s" % stage, classes="kanban-column"):
@@ -612,17 +831,23 @@ class OCDashboardApp(App[None]):
         if self._snapshot:
             project_path = self._snapshot.project_path
         if not project.session_ids:
-            self._pending_link_project_id = project.id
-            self._pending_link_existing_ids = set(s.id for s in self._sessions)
-            self._pending_link_until = datetime.now() + timedelta(seconds=15)
-            _launch_session_in_tmux(None, project_path)
-            self.set_timer(2.0, self.refresh_dashboard)
+            self._seed_and_open_session(project, project_path)
         elif len(project.session_ids) == 1:
-            _launch_session_in_tmux(project.session_ids[0], project_path)
+            _launch_session_interactive(project.session_ids[0], project_path)
         else:
             self.push_screen(
                 SessionPickerScreen(project.session_ids, self._sessions, project_path)
             )
+
+    @work(thread=True, exclusive=True, group="seed_session")
+    def _seed_and_open_session(self, project, project_path):
+        # type: (KanbanProject, Optional[str]) -> None
+        result = self._dashboard.seed_session_for_project(project)
+        self.call_from_thread(self._refresh_kanban)
+        if result.session_id:
+            _launch_session_interactive(result.session_id, project_path)
+        else:
+            _launch_session_interactive(None, project_path)
 
     def action_move_right(self) -> None:
         if self._mode != MODE_NORMAL:
@@ -632,7 +857,7 @@ class OCDashboardApp(App[None]):
             return
         idx = STAGES.index(project.stage)
         if idx < len(STAGES) - 1:
-            self._kanban.move_project(project.id, STAGES[idx + 1])
+            self._dashboard.kanban.move_project(project.id, STAGES[idx + 1])
             self._refresh_kanban()
 
     def action_move_left(self) -> None:
@@ -643,7 +868,7 @@ class OCDashboardApp(App[None]):
             return
         idx = STAGES.index(project.stage)
         if idx > 0:
-            self._kanban.move_project(project.id, STAGES[idx - 1])
+            self._dashboard.kanban.move_project(project.id, STAGES[idx - 1])
             self._refresh_kanban()
 
     def action_add_project(self) -> None:
@@ -683,14 +908,102 @@ class OCDashboardApp(App[None]):
         self._mode = MODE_LINK_PR
         self._show_input("PR number:", "#12345")
 
-    def action_delete_project(self) -> None:
+    def action_archive_project(self) -> None:
         if self._mode != MODE_NORMAL:
             return
         project = self._selected_project()
         if not project:
             return
-        self._kanban.delete_project(project.id)
+        self._dashboard.archive_project(project.id)
         self._refresh_kanban()
+
+    def action_show_archive(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        self.push_screen(ArchiveScreen(self))
+
+    def action_show_search(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        self._focus_project_after_search = None
+        self.push_screen(SearchScreen(self), callback=self._on_search_dismissed)
+
+    def action_wheel_next(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._dashboard.wheel_next()
+        self._render_wheel()
+        if project and project.session_ids:
+            project_path = self._snapshot.project_path if self._snapshot else None
+            _launch_session_interactive(project.session_ids[0], project_path)
+
+    def action_wheel_prev(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._dashboard.wheel_prev()
+        self._render_wheel()
+        if project and project.session_ids:
+            project_path = self._snapshot.project_path if self._snapshot else None
+            _launch_session_interactive(project.session_ids[0], project_path)
+
+    def action_wheel_add(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._selected_project()
+        if not project:
+            return
+        self._dashboard.wheel_add(project.id)
+        self._render_wheel()
+
+    def action_wheel_remove(self) -> None:
+        if self._mode != MODE_NORMAL:
+            return
+        project = self._selected_project()
+        if not project:
+            return
+        self._dashboard.wheel_remove(project.id)
+        self._render_wheel()
+
+    def _render_wheel(self) -> None:
+        try:
+            pane = self.query_one("#wheel-pane", Static)
+        except Exception:
+            return
+        wheel_items = self._dashboard.wheel_list()
+        if not wheel_items:
+            pane.add_class("hidden")
+            return
+        pane.remove_class("hidden")
+        current = self._dashboard.wheel_current()
+        current_id = current.id if current else None
+        parts = []  # type: list
+        for project in wheel_items:
+            title = project.title
+            if len(title) > 24:
+                title = title[:21] + "..."
+            if project.id == current_id:
+                parts.append("[bold #00ff41]\u25b8 %s \u25c2[/]" % title)
+            else:
+                parts.append("[dim]%s[/]" % title)
+        text = " \u25c0  %s  \u25b6" % ("  %s  " % _PIPE).join(parts)
+        pane.update(text)
+
+    def _on_search_dismissed(self, _result=None) -> None:
+        target_id = self._focus_project_after_search
+        self._focus_project_after_search = None
+        if not target_id:
+            return
+        project = self._dashboard.kanban.get_project(target_id)
+        if not project or project.stage not in STAGES:
+            return
+        self._refresh_kanban()
+        ol = self.query_one("#list-%s" % project.stage, KanbanList)
+        ol.focus()
+        items = self._projects_by_stage.get(project.stage, [])
+        for i, p in enumerate(items):
+            if p.id == target_id:
+                ol.highlighted = i
+                break
 
     # ── Input bar ──────────────────────────────────────────────────────
 
@@ -727,7 +1040,8 @@ class OCDashboardApp(App[None]):
                 self._pending_title = value
                 self._mode = MODE_ADD_DESC
                 self._show_input(
-                    "Description (optional, enter to skip):", "Brief description..."
+                    "Description (becomes the agent's initial prompt):",
+                    "What to build, context, constraints...",
                 )
             else:
                 self._hide_input()
@@ -735,7 +1049,7 @@ class OCDashboardApp(App[None]):
 
         if self._mode == MODE_ADD_DESC:
             stage = self._last_focused_stage or "pending"
-            self._kanban.create_project(
+            project = self._dashboard.kanban.create_project(
                 title=self._pending_title,
                 description=value,
                 stage=stage,
@@ -743,6 +1057,10 @@ class OCDashboardApp(App[None]):
             self._pending_title = ""
             self._hide_input()
             self._refresh_kanban()
+            project_path = None
+            if self._snapshot:
+                project_path = self._snapshot.project_path
+            self._seed_and_open_session(project, project_path)
             return
 
         if self._mode == MODE_LINK_SESSION:
@@ -759,9 +1077,9 @@ class OCDashboardApp(App[None]):
                             matched = s.id
                             break
                     if matched:
-                        self._kanban.link_session(project.id, matched)
+                        self._dashboard.kanban.link_session(project.id, matched)
                     else:
-                        self._kanban.link_session(project.id, value)
+                        self._dashboard.kanban.link_session(project.id, value)
             self._hide_input()
             self._refresh_kanban()
             return
@@ -775,7 +1093,7 @@ class OCDashboardApp(App[None]):
                         if sid == value or value in sid:
                             matched = sid
                             break
-                    self._kanban.unlink_session(project.id, matched or value)
+                    self._dashboard.kanban.unlink_session(project.id, matched or value)
             self._hide_input()
             self._refresh_kanban()
             return
@@ -786,7 +1104,7 @@ class OCDashboardApp(App[None]):
                 if project:
                     try:
                         pr_num = int(value.lstrip("#"))
-                        self._kanban.link_pr(project.id, pr_num)
+                        self._dashboard.kanban.link_pr(project.id, pr_num)
                     except ValueError:
                         pass
             self._hide_input()
@@ -816,38 +1134,13 @@ class OCDashboardApp(App[None]):
 
     @work(thread=True, exclusive=True)
     def refresh_dashboard(self) -> None:
-        snapshot = build_snapshot(limit=30)
-        self.call_from_thread(self._apply_snapshot, snapshot)
+        self._dashboard.refresh_snapshot()
+        self.call_from_thread(self._on_snapshot_applied)
 
-    def _apply_snapshot(self, snapshot):
-        # type: (DashboardSnapshot) -> None
-        self._snapshot = snapshot
-        self._sessions = snapshot.sessions
-        self._todos_by_session = snapshot.todos_by_session
-        self._workers_by_session = snapshot.workers_by_session
-        self._running_cpu = {}
-        self._cost_by_session = {}
-        self._unattributed_cpu = 0.0
-        for process in snapshot.running_processes:
-            if process.session_id:
-                current = self._running_cpu.get(process.session_id, 0.0)
-                self._running_cpu[process.session_id] = max(
-                    current, process.cpu_percent
-                )
-            else:
-                self._unattributed_cpu += process.cpu_percent
-        self._mem_by_session = {}
-        for process in snapshot.running_processes:
-            if process.session_id:
-                current = self._mem_by_session.get(process.session_id, 0)
-                self._mem_by_session[process.session_id] = current + process.mem_mb
-        self._total_cost = 0.0
-        for cost in snapshot.session_costs:
-            self._cost_by_session[cost.session_id] = cost.total_cost
-            self._total_cost += cost.total_cost
-
-        ci_fails = sum(1 for p in snapshot.prs if p.ci_status == CI_FAIL)
-        if ci_fails > self._prev_ci_fail_count and ci_fails > 0:
+    def _on_snapshot_applied(self) -> None:
+        prev = self._dashboard.state.prev_ci_fail_count
+        ci_fails = self._dashboard.ci_fail_count()
+        if ci_fails > prev and ci_fails > 0:
             self._error_flash_until = datetime.now() + timedelta(seconds=10)
             self._log_events.append(
                 LogEvent(
@@ -856,43 +1149,13 @@ class OCDashboardApp(App[None]):
                     fields={"detail": "%d PR(s) failing CI" % ci_fails},
                 )
             )
-        self._prev_ci_fail_count = ci_fails
-        self._try_auto_link_session(snapshot)
         self._render_topbar()
         self._render_detail()
-
-    def _try_auto_link_session(self, snapshot):
-        # type: (DashboardSnapshot) -> None
-        if not self._pending_link_project_id:
-            return
-        if self._pending_link_until and datetime.now() > self._pending_link_until:
-            self._pending_link_project_id = None
-            self._pending_link_existing_ids = set()
-            self._pending_link_until = None
-            return
-        current_ids = set(s.id for s in snapshot.sessions)
-        new_ids = current_ids - self._pending_link_existing_ids
-        if not new_ids:
-            return
-        new_id = sorted(new_ids)[-1]
-        self._kanban.link_session(self._pending_link_project_id, new_id)
-        self._pending_link_project_id = None
-        self._pending_link_existing_ids = set()
-        self._pending_link_until = None
-        self._refresh_kanban()
 
     # ── Kanban data ────────────────────────────────────────────────────
 
     def _refresh_kanban(self) -> None:
-        projects = self._kanban.list_projects()
-        self._projects_by_stage = {}
-        for s in STAGES:
-            self._projects_by_stage[s] = []
-        for p in projects:
-            stage = p.stage if p.stage in STAGES else "pending"
-            self._projects_by_stage[stage].append(p)
-        for s in STAGES:
-            self._projects_by_stage[s].sort(key=lambda p: p.updated_at, reverse=True)
+        self._dashboard.refresh_kanban()
         self._render_kanban()
 
     def _selected_project(self):
@@ -918,6 +1181,7 @@ class OCDashboardApp(App[None]):
         for stage in STAGES:
             self._render_kanban_column(stage)
         self._render_detail()
+        self._render_wheel()
 
     def _render_kanban_column(self, stage):
         # type: (str) -> None
@@ -1020,9 +1284,24 @@ class OCDashboardApp(App[None]):
 
     def _render_footerbar(self) -> None:
         self.query_one("#footerbar", Static).update(
-            " q:quit %s r:refresh %s S:sessions %s tab:columns %s j/k:select"
-            " %s enter:open %s m/M:move %s a:add %s s:link %s u:unlink"
-            % (_PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE, _PIPE)
+            " q:quit %s r:refresh %s S:sessions %s A:archive %s /:search"
+            " %s n/N:wheel %s w/W:wheel+/- %s tab:columns %s j/k:select"
+            " %s enter:open %s m/M:move %s a:add %s d:archive %s s:link"
+            % (
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+                _PIPE,
+            )
         )
 
     def _render_detail(self) -> None:
@@ -1086,26 +1365,7 @@ class OCDashboardApp(App[None]):
     # ── Helpers ────────────────────────────────────────────────────────
 
     def _init_branch(self) -> None:
-        if self._current_branch:
-            return
-        try:
-            from .data import discover_project_path
-
-            pp = discover_project_path()
-            if pp:
-                result = subprocess.run(
-                    ["git", "-C", pp, "rev-parse", "--abbrev-ref", "HEAD"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=3,
-                )
-                if result.returncode == 0:
-                    branch = result.stdout.strip()
-                    if branch and branch != "HEAD":
-                        self._current_branch = branch
-        except Exception:
-            pass
+        self._dashboard.init_branch()
 
 
 def main() -> None:

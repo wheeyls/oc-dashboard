@@ -18,3 +18,8 @@ oc-kanban = "oc_dashboard.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.basedpyright]
+pythonVersion = "3.9"
+venvPath = "."
+venv = ".venv"

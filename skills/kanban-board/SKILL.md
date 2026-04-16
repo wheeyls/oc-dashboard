@@ -124,10 +124,73 @@ id=a1b2c3d4  stage=in_progress  title=Refactor auth flow
   created=2026-02-27T10:00:00  updated=2026-02-27T14:30:00
 ```
 
+## Wheel — Fast Context Switching
+
+The wheel is an ordered circular list of active projects for quick rotation. Use it to keep your most active projects one keystroke away.
+
+### CLI Reference
+
+```bash
+# List wheel contents (>> marks current)
+oc-kanban wheel
+
+# Add a project to the wheel
+oc-kanban wheel-add <project_id>
+
+# Remove a project from the wheel
+oc-kanban wheel-remove <project_id>
+
+# Advance to next project (cursor wraps)
+oc-kanban wheel-next
+
+# Go to previous project (cursor wraps)
+oc-kanban wheel-prev
+```
+
+### Proactive Triggers
+
+When starting a new significant task, add the project to the wheel so the user can quickly switch back to it:
+
+```bash
+oc-kanban wheel-add <project_id>
+```
+
+When work on a project is complete (moved to done or archived), remove it from the wheel:
+
+```bash
+oc-kanban wheel-remove <project_id>
+```
+
+### Tmux Integration
+
+`wheel-go` rotates the wheel and opens the resulting session in a new tmux pane:
+
+```bash
+# From any terminal inside tmux
+oc-kanban wheel-go next
+oc-kanban wheel-go prev
+```
+
+Add to `~/.tmux.conf` for global keybindings:
+
+```
+bind-key n run-shell "oc-kanban wheel-go next"
+bind-key N run-shell "oc-kanban wheel-go prev"
+```
+
+This binds `prefix + n` / `prefix + N` to rotate the wheel and split a new pane with the session. Works from any pane, including inside an active OpenCode session.
+
+### TUI Keybindings
+
+- `n` — rotate to next wheel project and auto-open its session
+- `N` — rotate to previous wheel project and auto-open its session
+- `w` — add focused kanban project to the wheel
+- `W` — remove focused kanban project from the wheel
+
 ## Data Storage
 
 Projects are stored in `~/.local/share/oc-dashboard/kanban.json`. The backend is a thin adapter — can be swapped to JIRA or Trello MCP in the future without changing usage patterns.
 
 ## Integration with oc-dashboard TUI
 
-The user can view the board visually by running `oc-dashboard`. The board shows 3 columns with project cards, linked sessions, and PR status. The TUI and CLI share the same JSON file — changes from either side are immediately visible to the other.
+The user can view the board visually by running `oc-dashboard`. The board shows 3 columns with project cards, linked sessions, and PR status. A wheel pane above the kanban columns shows active context-switch targets. The TUI and CLI share the same JSON file — changes from either side are immediately visible to the other.

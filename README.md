@@ -12,7 +12,7 @@
 
 ## Agent Instructions
 
-You are installing **oc-dashboard**, a TUI for monitoring OpenCode sessions with a built-in Kanban board for tracking projects across sessions.
+You are installing **oc-dashboard**, a TUI for monitoring OpenCode sessions with a built-in Kanban board, archive, search, and a wheel for fast context-switching between active projects.
 
 ### Prerequisites
 
@@ -80,24 +80,37 @@ oc-dashboard
 
 After installing, tell the user:
 
-**The dashboard is a Kanban board** with three columns: Pending, In Progress, and Done. It also monitors your OpenCode sessions, PRs, costs, and system health in real-time.
+**The dashboard is a Kanban board** with three columns: Pending, In Progress, and Done. It monitors your OpenCode sessions, PRs, costs, and system health in real-time. Projects can be archived (with stage memory) and restored later. A search screen lets you find projects by title, description, session ID, PR number, or tag. The wheel gives you fast circular rotation through your most active projects.
 
 **Keyboard shortcuts:**
 
-| Key                 | Action                                   |
-| ------------------- | ---------------------------------------- |
-| `tab` / `shift+tab` | Move between columns                     |
-| `j` / `k`           | Navigate within a column                 |
-| `enter`             | Open linked session (picks if multiple)  |
-| `a`                 | Add a new project                        |
-| `m` / `M`           | Move project right / left through stages |
-| `s`                 | Link a session to the selected project   |
-| `u`                 | Unlink a session                         |
-| `p`                 | Link a PR number                         |
-| `d`                 | Delete a project                         |
-| `S`                 | Open the sessions browser                |
-| `r`                 | Force refresh                            |
-| `q`                 | Quit                                     |
+| Key                 | Action                                     |
+| ------------------- | ------------------------------------------ |
+| `tab` / `shift+tab` | Move between columns                       |
+| `j` / `k`           | Navigate within a column                   |
+| `enter`             | Open linked session (creates one if none)  |
+| `a`                 | Add a new project                          |
+| `m` / `M`           | Move project right / left through stages   |
+| `s`                 | Link a session to the selected project     |
+| `u`                 | Unlink a session                           |
+| `p`                 | Link a PR number                           |
+| `d`                 | Archive a project                          |
+| `A`                 | Open the archive (restore with `enter`)    |
+| `/`                 | Search projects and sessions               |
+| `n` / `N`           | Wheel: rotate next / prev and open session |
+| `w` / `W`           | Wheel: add / remove selected project       |
+| `S`                 | Open the sessions browser                  |
+| `r`                 | Force refresh                              |
+| `q`                 | Quit                                       |
+
+**Tmux wheel integration (optional):** Add to `~/.tmux.conf` for global rotation from any pane:
+
+```
+bind-key n run-shell "oc-kanban wheel-go next"
+bind-key N run-shell "oc-kanban wheel-go prev"
+```
+
+This lets you hit `prefix + n` to rotate to the next project and open its session — even from inside an active OpenCode session.
 
 **The Kanban skill is now active.** When you start significant work in OpenCode, your agent will automatically create and track projects on the board. You can also ask your agent things like "what am I working on?" or "move my project to done."
 

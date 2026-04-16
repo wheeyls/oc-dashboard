@@ -573,9 +573,9 @@ def _in_tmux():
 
 def _launch_session_in_tmux(session_id, project_path=None):
     # type: (str, Optional[str]) -> None
-    import os
+    from .opencode import opencode_env_prefix
 
-    oc_cmd = "opencode -s %s" % session_id
+    oc_cmd = "%sopencode -s %s" % (opencode_env_prefix(), session_id)
     if project_path:
         oc_cmd = "cd %s && %s" % (project_path, oc_cmd)
     if _in_tmux():

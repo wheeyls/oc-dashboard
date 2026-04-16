@@ -19,11 +19,13 @@ from typing import Any, Dict, List, Optional
 # ── Kanban stages (in board order) ────────────────────────
 
 STAGES = ["pending", "in_progress", "done"]
+ALL_STAGES = ["pending", "in_progress", "done", "archived"]
 
 STAGE_LABELS = {
     "pending": "Pending",
     "in_progress": "In Progress",
     "done": "Done",
+    "archived": "Archived",
 }
 
 
@@ -41,10 +43,11 @@ class KanbanProject:
     session_ids: List[str] = field(default_factory=list)
     pr_numbers: List[int] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+    previous_stage: Optional[str] = None
 
     def to_dict(self):
         # type: () -> Dict[str, Any]
-        return {
+        d = {
             "id": self.id,
             "title": self.title,
             "description": self.description,
@@ -54,7 +57,10 @@ class KanbanProject:
             "session_ids": list(self.session_ids),
             "pr_numbers": list(self.pr_numbers),
             "tags": list(self.tags),
-        }
+        }  # type: Dict[str, Any]
+        if self.previous_stage:
+            d["previous_stage"] = self.previous_stage
+        return d
 
     @classmethod
     def from_dict(cls, d):
@@ -69,6 +75,7 @@ class KanbanProject:
             session_ids=list(d.get("session_ids", [])),
             pr_numbers=list(d.get("pr_numbers", [])),
             tags=list(d.get("tags", [])),
+            previous_stage=d.get("previous_stage"),
         )
 
 
@@ -137,6 +144,44 @@ class KanbanAdapter(ABC):
         # type: (str, int) -> bool
         ...
 
+    # ── Wheel methods ─────────────────────────────────────
+
+    @abstractmethod
+    def wheel_list(self):
+        # type: () -> List[str]
+        """Return ordered list of project IDs on the wheel."""
+        ...
+
+    @abstractmethod
+    def wheel_add(self, project_id):
+        # type: (str) -> bool
+        """Add a project to the wheel. False if already on wheel or not found."""
+        ...
+
+    @abstractmethod
+    def wheel_remove(self, project_id):
+        # type: (str) -> bool
+        """Remove a project from the wheel. False if not on wheel."""
+        ...
+
+    @abstractmethod
+    def wheel_next(self):
+        # type: () -> Optional[str]
+        """Advance cursor and return project ID. None if empty."""
+        ...
+
+    @abstractmethod
+    def wheel_prev(self):
+        # type: () -> Optional[str]
+        """Move cursor back and return project ID. None if empty."""
+        ...
+
+    @abstractmethod
+    def wheel_current(self):
+        # type: () -> Optional[str]
+        """Return project ID at current cursor. None if empty."""
+        ...
+
 
 # ── Local JSON-file implementation ───────────────────────
 
@@ -155,6 +200,8 @@ class LocalJsonKanban(KanbanAdapter):
         # type: (Optional[str]) -> None
         self._path = path or _DEFAULT_PATH
         self._projects = {}  # type: Dict[str, KanbanProject]
+        self._wheel_ids = []  # type: List[str]
+        self._wheel_cursor = 0
         self._load()
 
     # ── persistence ───────────────────────────────────────
@@ -163,6 +210,8 @@ class LocalJsonKanban(KanbanAdapter):
         # type: () -> None
         if not os.path.exists(self._path):
             self._projects = {}
+            self._wheel_ids = []
+            self._wheel_cursor = 0
             return
         try:
             with open(self._path, "r") as fh:
@@ -172,8 +221,13 @@ class LocalJsonKanban(KanbanAdapter):
             for d in projects:
                 p = KanbanProject.from_dict(d)
                 self._projects[p.id] = p
+            wheel_data = data.get("wheel", {})
+            self._wheel_ids = list(wheel_data.get("ids", []))
+            self._wheel_cursor = int(wheel_data.get("cursor", 0))
         except Exception:
             self._projects = {}
+            self._wheel_ids = []
+            self._wheel_cursor = 0
 
     def _save(self):
         # type: () -> None
@@ -183,6 +237,10 @@ class LocalJsonKanban(KanbanAdapter):
         payload = {
             "version": 1,
             "projects": [p.to_dict() for p in self._projects.values()],
+            "wheel": {
+                "ids": list(self._wheel_ids),
+                "cursor": self._wheel_cursor,
+            },
         }
         tmp = self._path + ".tmp"
         with open(tmp, "w") as fh:
@@ -208,7 +266,7 @@ class LocalJsonKanban(KanbanAdapter):
             id=str(uuid.uuid4())[:8],
             title=title,
             description=description,
-            stage=stage if stage in STAGES else "pending",
+            stage=stage if stage in ALL_STAGES else "pending",
             created_at=now,
             updated_at=now,
             tags=tags or [],
@@ -222,10 +280,10 @@ class LocalJsonKanban(KanbanAdapter):
         p = self._projects.get(project_id)
         if not p:
             return None
-        for key in ("title", "description", "tags"):
+        for key in ("title", "description", "tags", "previous_stage"):
             if key in kwargs:
                 setattr(p, key, kwargs[key])
-        if "stage" in kwargs and kwargs["stage"] in STAGES:
+        if "stage" in kwargs and kwargs["stage"] in ALL_STAGES:
             p.stage = kwargs["stage"]
         p.updated_at = _now_iso()
         self._save()
@@ -233,7 +291,7 @@ class LocalJsonKanban(KanbanAdapter):
 
     def move_project(self, project_id, stage):
         # type: (str, str) -> Optional[KanbanProject]
-        if stage not in STAGES:
+        if stage not in ALL_STAGES:
             return None
         return self.update_project(project_id, stage=stage)
 
@@ -288,3 +346,64 @@ class LocalJsonKanban(KanbanAdapter):
             p.updated_at = _now_iso()
             self._save()
         return True
+
+    # ── wheel implementation ──────────────────────────────
+
+    def wheel_list(self):
+        # type: () -> List[str]
+        self._load()
+        return list(self._wheel_ids)
+
+    def wheel_add(self, project_id):
+        # type: (str) -> bool
+        self._load()
+        if project_id not in self._projects:
+            return False
+        if project_id in self._wheel_ids:
+            return False
+        self._wheel_ids.append(project_id)
+        self._save()
+        return True
+
+    def wheel_remove(self, project_id):
+        # type: (str) -> bool
+        self._load()
+        if project_id not in self._wheel_ids:
+            return False
+        idx = self._wheel_ids.index(project_id)
+        self._wheel_ids.remove(project_id)
+        if not self._wheel_ids:
+            self._wheel_cursor = 0
+        elif idx < self._wheel_cursor:
+            self._wheel_cursor -= 1
+        elif self._wheel_cursor >= len(self._wheel_ids):
+            self._wheel_cursor = 0
+        self._save()
+        return True
+
+    def wheel_next(self):
+        # type: () -> Optional[str]
+        self._load()
+        if not self._wheel_ids:
+            return None
+        self._wheel_cursor = (self._wheel_cursor + 1) % len(self._wheel_ids)
+        self._save()
+        return self._wheel_ids[self._wheel_cursor]
+
+    def wheel_prev(self):
+        # type: () -> Optional[str]
+        self._load()
+        if not self._wheel_ids:
+            return None
+        self._wheel_cursor = (self._wheel_cursor - 1) % len(self._wheel_ids)
+        self._save()
+        return self._wheel_ids[self._wheel_cursor]
+
+    def wheel_current(self):
+        # type: () -> Optional[str]
+        self._load()
+        if not self._wheel_ids:
+            return None
+        if self._wheel_cursor >= len(self._wheel_ids):
+            self._wheel_cursor = 0
+        return self._wheel_ids[self._wheel_cursor]
