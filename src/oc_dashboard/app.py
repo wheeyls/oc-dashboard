@@ -517,10 +517,10 @@ class SearchScreen(Screen):
             _launch_session_interactive(result.id, project_path)
         elif result.kind == "project":
             self._app_ref._focus_project_after_search = result.id
-            self.app.pop_screen()
+            self.dismiss()
 
     def action_pop_screen(self) -> None:
-        self.app.pop_screen()
+        self.dismiss()
 
 
 # ══════════════════════════════════════════════════════════
@@ -569,6 +569,8 @@ class OCDashboardApp(App[None]):
         self._pending_title = ""
         self._last_focused_stage = "pending"
         self._focus_project_after_search = None  # type: Optional[str]
+        self._pending_focus_stage = None  # type: Optional[str]
+        self._pending_focus_project = None  # type: Optional[str]
 
     # ── State accessors (delegate to Dashboard) ────────────
 
@@ -998,14 +1000,16 @@ class OCDashboardApp(App[None]):
         project = self._dashboard.kanban.get_project(target_id)
         if not project or project.stage not in STAGES:
             return
+        self._pending_focus_stage = project.stage
+        self._pending_focus_project = target_id
         self._refresh_kanban()
         ol = self.query_one("#list-%s" % project.stage, KanbanList)
-        ol.focus()
         items = self._projects_by_stage.get(project.stage, [])
         for i, p in enumerate(items):
             if p.id == target_id:
                 ol.highlighted = i
                 break
+        ol.focus()
 
     # ── Input bar ──────────────────────────────────────────────────────
 
@@ -1162,6 +1166,11 @@ class OCDashboardApp(App[None]):
 
     def _selected_project(self):
         # type: () -> Optional[KanbanProject]
+        if self._pending_focus_project:
+            pid = self._pending_focus_project
+            self._pending_focus_project = None
+            self._pending_focus_stage = None
+            return self._dashboard.kanban.get_project(pid)
         focused = self.focused
         if isinstance(focused, KanbanList):
             stage = focused.id.replace("list-", "") if focused.id else "pending"
@@ -1170,7 +1179,6 @@ class OCDashboardApp(App[None]):
         else:
             return None
         items = self._projects_by_stage.get(stage, [])
-        # Get highlighted index from the correct list
         ol = self.query_one("#list-%s" % stage, KanbanList)
         idx = ol.highlighted
         if idx is not None and 0 <= idx < len(items):
